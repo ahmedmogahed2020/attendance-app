@@ -640,16 +640,19 @@
       if (!range) throw new Error('الملف مفيهوش تواريخ');
       let addedEmp = 0;
       const ids = new Set(parsed.punches.map(p => p.id).concat(Object.keys(parsed.names)));
+      // تاريخ بداية الموظف الجديد = أول بصمة ليه (بعد فترة تجربة الجهاز)، مش أول يوم في الملف
+      const first = {}, df = S.settings.deviceFrom || '';
+      for (const p of parsed.punches) if (p.key >= df && (!first[p.id] || p.key < first[p.id])) first[p.id] = p.key;
       for (const id of ids) {
         if (parsed.names[id] && !S.names[id]) S.names[id] = parsed.names[id];
         if (S.removed[id]) continue;
-        if (!S.employees[id]) { S.employees[id] = { name: parsed.names[id] || '', off: '', shift: '', start: range.from, end: '' }; addedEmp++; }
+        if (!S.employees[id]) { S.employees[id] = { name: parsed.names[id] || '', off: '', shift: '', start: first[id] || (range.from > df ? range.from : df), end: '' }; addedEmp++; }
         else if (!S.employees[id].name && parsed.names[id]) S.employees[id].name = parsed.names[id];
       }
       const added = mergePunches(parsed.punches);
       S.imports.unshift({ name: f.name, at: todayKey(), count: added, from: range.from, to: range.to }); S.imports = S.imports.slice(0, 50);
       save();
-      toast(`اتقرا الملف: ${added} بصمة جديدة` + (addedEmp ? ` و${addedEmp} موظف جديد` : ''));
+      toast(`اتقرا الملف: ${added} بصمة جديدة` + (addedEmp ? ` و${addedEmp} موظف جديد — كمّل بياناتهم` : ''));
       UI.month = monthOf(range.to);
       if (addedEmp) go('emps'); else render();
     } catch (e) { console.error(e); toast('مقدرتش أقرا الملف: ' + (e.message || e)); }
