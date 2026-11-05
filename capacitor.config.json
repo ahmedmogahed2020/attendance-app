@@ -1,0 +1,10 @@
+{
+  "appId": "com.ahmedmogahed.attendance",
+  "appName": "الحضور والانصراف",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#0F766E"
+  },
+  "backgroundColor": "#0F766E"
+}

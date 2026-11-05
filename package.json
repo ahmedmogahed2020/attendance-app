@@ -1,1 +1,19 @@
-{"name":"attendance-app","private":true,"description":"Attendance PWA"}
+{
+  "name": "attendance-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "الحضور والانصراف — تطبيق أندرويد (Capacitor) + نسخة ويب",
+  "scripts": {
+    "www": "rm -rf www && mkdir -p www && cp -r index.html app.js engine.js manifest.json sw.js icons vendor www/",
+    "sync": "npm run www && npx cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "7.6.10",
+    "@capacitor/core": "7.6.10",
+    "@capacitor/filesystem": "7.1.9",
+    "@capacitor/share": "7.0.4"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "7.6.10"
+  }
+}

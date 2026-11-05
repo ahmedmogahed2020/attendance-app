@@ -7,7 +7,17 @@
 
   /* ---------- الحالة والحفظ ---------- */
   function blank() {
-    return { settings: JSON.parse(JSON.stringify(E.DEFAULT_SETTINGS)), employees: {}, perms: {}, manual: {}, data: null, fileName: '', range: null, view: { type: 'summary', emp: '' } };
+    return { settings: JSON.parse(JSON.stringify(E.DEFAULT_SETTINGS)), employees: {}, perms: {}, manual: {}, punches: [], names: {}, removed: {}, imports: [], view: { type: 'summary', emp: '' } };
+  }
+  function migrate() {
+    // النسخة الأولى كانت بتحفظ آخر ملف بس — نحوّله لسجل البصمات المتجمع
+    if (S.data) { mergePunches(S.data.punches || []); Object.assign(S.names, S.data.names || {}); if (S.fileName) S.imports.push({ name: S.fileName, at: todayKey(), count: (S.data.punches || []).length }); delete S.data; delete S.fileName; delete S.range; }
+    for (const id in S.employees) if (S.employees[id].hidden) { S.removed[id] = true; delete S.employees[id]; }
+  }
+  function mergePunches(list) {
+    const seen = new Set(S.punches.map(p => `${p.id}|${p.key}|${p.min}|${p.type || ''}`)); let added = 0;
+    for (const p of list) { const k = `${p.id}|${p.key}|${p.min}|${p.type || ''}`; if (!seen.has(k)) { seen.add(k); S.punches.push({ id: p.id, key: p.key, min: p.min, type: p.type || null }); added++; } }
+    return added;
   }
   let S = blank();
   try { const raw = localStorage.getItem(KEY); if (raw) S = Object.assign(blank(), JSON.parse(raw)); } catch (e) { /* التخزين مش متاح */ }
@@ -32,8 +42,25 @@
   const D = E.fmtDur, C = E.fmtClock;
   const fmtDate = k => { const [y, m, d] = k.split('-'); return `${+d}/${+m}/${y}`; };
   const shortDate = k => { const [, m, d] = k.split('-'); return `${+d}/${+m}`; };
-  const empName = id => (S.employees[id] && S.employees[id].name) || (S.data && S.data.names && S.data.names[id]) || ('موظف ' + id);
+  const empName = id => (S.employees[id] && S.employees[id].name) || S.names[id] || ('موظف ' + id);
   const todayKey = () => { const t = new Date(); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`; };
+  const MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+  const monthLabel = m => { const [y, mo] = m.split('-'); return `${MONTHS[+mo - 1]} ${y}`; };
+  const thisMonth = () => todayKey().slice(0, 7);
+  const isNative = () => !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  /** حفظ ملف: في التطبيق بيفتح قائمة المشاركة/الحفظ، وفي المتصفح بينزل عادي */
+  async function saveFile(name, mime, base64, text) {
+    if (isNative()) {
+      const P = window.Capacitor.Plugins, F = P.Filesystem, Sh = P.Share;
+      const r = await F.writeFile(text != null ? { path: name, data: text, directory: 'CACHE', encoding: 'utf8' } : { path: name, data: base64, directory: 'CACHE' });
+      try { await Sh.share({ title: name, dialogTitle: 'احفظ الملف أو ابعته', files: [r.uri] }); } catch (e) { if (!/cancel/i.test(String(e && e.message))) throw e; }
+      return;
+    }
+    const blob = text != null ? new Blob([text], { type: mime }) : new Blob([Uint8Array.from(atob(base64), c => c.charCodeAt(0))], { type: mime });
+    const a = h('a', { href: URL.createObjectURL(blob), download: name });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
   const sortedIds = () => Object.keys(S.employees).sort((a, b) => (+a - +b) || a.localeCompare(b));
 
   /* ---------- التبويبات ---------- */
@@ -62,17 +89,20 @@
       }
       const range = E.dataRange(data);
       if (!range) throw new Error('الملف مفيهوش تواريخ');
-      let added = 0;
+      let addedEmp = 0, skipped = 0;
       const ids = new Set(data.punches.map(p => p.id).concat(Object.keys(data.names)));
       for (const id of ids) {
-        if (!S.employees[id]) { S.employees[id] = { name: data.names[id] || '', off: '' }; added++; }
+        if (data.names[id] && !S.names[id]) S.names[id] = data.names[id];
+        if (S.removed[id]) { skipped++; continue; }
+        if (!S.employees[id]) { S.employees[id] = { name: data.names[id] || '', off: '', start: range.from }; addedEmp++; }
         else if (!S.employees[id].name && data.names[id]) S.employees[id].name = data.names[id];
       }
-      S.data = data; S.fileName = f.name; S.range = range;
-      $('from').value = range.from; $('to').value = range.to;
+      const added = mergePunches(data.punches);
+      S.imports.unshift({ name: f.name, at: todayKey(), count: added, from: range.from, to: range.to }); S.imports = S.imports.slice(0, 50);
       save();
-      const kindTxt = data.kind === 'report' ? 'تقرير الجهاز' : 'سجل البصمات الخام';
-      flash(box, 'ok', `تمام — ${kindTxt}: ${ids.size} موظف، ${data.punches.length} بصمة، من ${fmtDate(range.from)} لـ ${fmtDate(range.to)}` + (added ? ` — اتضاف ${added} موظف جديد` : ''));
+      $('month').value = range.to.slice(0, 7);
+      const kindTxt = data.kind === 'report' ? 'تقرير الجهاز' : 'سجل البصمات';
+      flash(box, 'ok', `تمام — ${kindTxt} من ${fmtDate(range.from)} لـ ${fmtDate(range.to)}: ${added} بصمة جديدة` + (data.punches.length - added ? ` (و${data.punches.length - added} كانت موجودة قبل كده)` : '') + (addedEmp ? ` — اتضاف ${addedEmp} موظف جديد` : '') + (skipped ? ` — اتجاهل ${skipped} موظف محذوف` : ''));
       renderAll();
     } catch (e) {
       console.error(e);
@@ -92,28 +122,34 @@
   }
 
   /* ---------- الحساب ---------- */
+  function currentMonth() { const m = $('month').value; return /^\d{4}-\d{2}$/.test(m) ? m : thisMonth(); }
   function currentRange() {
-    const f = $('from').value || (S.range && S.range.from), t = $('to').value || (S.range && S.range.to);
-    if (!f || !t) return null;
-    return f <= t ? { from: f, to: t } : { from: t, to: f };
+    const m = currentMonth(), [y, mo] = m.split('-').map(Number);
+    const from = `${m}-01`, last = `${m}-${String(new Date(y, mo, 0).getDate()).padStart(2, '0')}`;
+    const today = todayKey();
+    return { from, to: last < today ? last : today, monthEnd: last, future: from > today };
   }
   function computeNow() {
-    const r = currentRange(); if (!r || !S.data) return null;
-    return E.compute(S, S.data, r);
+    const r = currentRange(); if (r.future) return [];
+    return E.compute(Object.assign({}, S, { onlyListed: true }), { punches: S.punches, names: S.names }, r);
   }
 
   /* ---------- شاشة التقرير ---------- */
   function renderReport() {
-    $('file-info').textContent = S.fileName ? `الملف الحالي: ${S.fileName} — اضغط لاختيار ملف تاني` : 'Excel أو ملف السجل (attlog) من الجهاز';
-    $('subtitle').textContent = S.range ? `البيانات من ${fmtDate(S.range.from)} لـ ${fmtDate(S.range.to)}` : 'ارفع ملف جهاز البصمة وطلّع التقرير';
-    const has = !!S.data;
-    $('report-card').hidden = !has;
-    if (!has) { $('missing-card').hidden = true; $('notices').replaceChildren(); $('report-out').replaceChildren(h('div', { class: 'card empty' }, 'لسه مفيش ملف. اختار ملف جهاز البصمة من فوق.')); return; }
-
-    if (!$('from').value && S.range) { $('from').value = S.range.from; $('to').value = S.range.to; }
+    const last = S.imports[0];
+    $('file-info').textContent = last ? `آخر ملف: ${last.name} (${fmtDate(last.at)}) — كل الملفات بتتجمع مع بعض` : 'Excel أو ملف السجل (attlog) من الجهاز';
+    if (!$('month').value) $('month').value = thisMonth();
+    const rng = currentRange();
+    $('subtitle').textContent = `شهر ${monthLabel(currentMonth())}` + (currentMonth() === thisMonth() ? ' (الشهر الحالي)' : '');
+    $('month-label').textContent = monthLabel(currentMonth());
+    $('month-today').hidden = currentMonth() === thisMonth();
+    const has = sortedIds().length > 0;
+    $('report-card').hidden = false;
+    if (!has) { $('missing-card').hidden = true; $('notices').replaceChildren(); $('report-out').replaceChildren(h('div', { class: 'card empty' }, 'لسه مفيش موظفين. ارفع ملف الجهاز من فوق، أو ضيف الموظفين من شاشة "الموظفين".')); return; }
+    if (rng.future) { $('missing-card').hidden = true; $('notices').replaceChildren(); $('report-out').replaceChildren(h('div', { class: 'card empty' }, 'الشهر ده لسه مجاش.')); return; }
     // اختيار الموظف
     const sel = $('emp-sel'), cur = S.view.emp || '';
-    sel.replaceChildren(h('option', { value: '' }, 'كل الموظفين'), ...sortedIds().filter(id => !S.employees[id].hidden).map(id => h('option', { value: id }, `${empName(id)} (${id})`)));
+    sel.replaceChildren(h('option', { value: '' }, 'كل الموظفين'), ...sortedIds().map(id => h('option', { value: id }, `${empName(id)} (${id})`)));
     sel.value = cur; if (sel.value !== cur) { S.view.emp = ''; sel.value = ''; }
     document.querySelectorAll('#type-seg button').forEach(b => b.classList.toggle('on', b.dataset.v === S.view.type));
 
@@ -165,9 +201,9 @@
     const empSel = S.view.emp;
     const list = empSel ? res.filter(e => e.id === empSel) : res;
     const out = $('report-out');
-    if (!list.length) { out.replaceChildren(h('div', { class: 'card empty' }, 'مفيش موظفين في الفترة دي.')); return; }
-    if (S.view.type === 'summary') out.replaceChildren(h('div', { class: 'card' }, h('h2', null, `تقرير شامل — ${fmtDate(currentRange().from)} لـ ${fmtDate(currentRange().to)}`), ...list.map(summaryCard)));
-    else out.replaceChildren(h('div', { class: 'card' }, h('h2', null, `تقرير مفصّل — ${fmtDate(currentRange().from)} لـ ${fmtDate(currentRange().to)}`),
+    if (!list.length) { out.replaceChildren(h('div', { class: 'card empty' }, 'مفيش موظفين شغالين في الشهر ده.')); return; }
+    if (S.view.type === 'summary') out.replaceChildren(h('div', { class: 'card' }, h('h2', null, `تقرير شامل — ${monthLabel(currentMonth())}${rng.to < rng.monthEnd ? ' (لحد ' + fmtDate(rng.to) + ')' : ''}`), ...list.map(summaryCard)));
+    else out.replaceChildren(h('div', { class: 'card' }, h('h2', null, `تقرير مفصّل — ${monthLabel(currentMonth())}${rng.to < rng.monthEnd ? ' (لحد ' + fmtDate(rng.to) + ')' : ''}`),
       h('p', { class: 'muted', style: 'margin-top:0' }, 'اضغط على أي يوم عشان تعدّل الوقت أو تسجّل إذن.'), ...list.map(detailTable)));
   }
 
@@ -217,8 +253,11 @@
   });
   $('type-seg').addEventListener('click', ev => { const b = ev.target.closest('button'); if (!b) return; S.view.type = b.dataset.v; save(); renderReport(); });
   $('emp-sel').addEventListener('change', ev => { S.view.emp = ev.target.value; save(); renderReport(); });
-  $('from').addEventListener('change', renderReport);
-  $('to').addEventListener('change', renderReport);
+  const shiftMonth = d => { const [y, m] = currentMonth().split('-').map(Number); const t = new Date(y, m - 1 + d, 1); $('month').value = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}`; renderReport(); };
+  $('month-prev').addEventListener('click', () => shiftMonth(-1));
+  $('month-next').addEventListener('click', () => shiftMonth(1));
+  $('month-today').addEventListener('click', () => { $('month').value = thisMonth(); renderReport(); });
+  $('month').addEventListener('change', renderReport);
 
   /* ---------- نافذة تعديل اليوم ---------- */
   let dlgCtx = null;
@@ -256,11 +295,12 @@
   const txt = v => ({ t: 's', v: v == null ? '' : String(v) });
   const num = v => ({ t: 'n', v: v || 0 });
   $('export').addEventListener('click', () => {
-    const res = computeNow(); if (!res) return;
+    const res = computeNow(); if (!res || !res.length) return;
     const r = currentRange();
     const list = S.view.emp ? res.filter(e => e.id === S.view.emp) : res;
     const isSum = S.view.type === 'summary';
-    const title = `${isSum ? 'تقرير شامل' : 'تقرير مفصّل'}${S.view.emp ? ' — ' + list[0].name : ' — كل الموظفين'} — من ${fmtDate(r.from)} إلى ${fmtDate(r.to)}`;
+    if (!list.length) return;
+    const title = `${isSum ? 'تقرير شامل' : 'تقرير مفصّل'}${S.view.emp ? ' — ' + list[0].name : ' — كل الموظفين'} — شهر ${monthLabel(currentMonth())} (من ${fmtDate(r.from)} إلى ${fmtDate(r.to)})`;
     const aoa = [[txt(title)], []];
     let widths;
     if (isSum) {
@@ -291,18 +331,15 @@
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, isSum ? 'شامل' : 'مفصل');
     wb.Workbook = { Views: [{ RTL: true }] };
-    const fname = `attendance_${isSum ? 'summary' : 'detailed'}${S.view.emp ? '_emp' + S.view.emp : '_all'}_${r.from}_to_${r.to}.xlsx`;
-    const out = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
-    const blob = new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    const a = h('a', { href: URL.createObjectURL(blob), download: fname });
-    document.body.append(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    const fname = `attendance_${currentMonth()}_${isSum ? 'summary' : 'detailed'}${S.view.emp ? '_emp' + S.view.emp : '_all'}.xlsx`;
+    saveFile(fname, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', XLSX.write(wb, { type: 'base64', bookType: 'xlsx' }))
+      .catch(e => flash($('import-msg'), 'err', 'مقدرتش أحفظ الملف: ' + (e.message || e)));
   });
 
   /* ---------- الأذونات ---------- */
   function renderPerms() {
     const sel = $('p-emp'), cur = sel.value;
-    sel.replaceChildren(...sortedIds().filter(id => !S.employees[id].hidden).map(id => h('option', { value: id }, `${empName(id)} (${id})`)));
+    sel.replaceChildren(...sortedIds().map(id => h('option', { value: id }, `${empName(id)} (${id})`)));
     if (cur) sel.value = cur;
     if (!$('p-date').value) $('p-date').value = todayKey();
     const items = Object.entries(S.perms).map(([k, v]) => { const [id, date] = k.split('|'); return { id, date, ...v }; })
@@ -324,23 +361,40 @@
 
   /* ---------- الموظفين ---------- */
   function renderEmps() {
-    const ids = sortedIds();
+    const ids = sortedIds(), today = todayKey();
+    const offSelect = (val, onchange) => { const el = h('select', { 'aria-label': 'يوم الإجازة', onchange }, h('option', { value: '' }, '— مش متحدد —'), ...E.DAY_NAMES.map((n, i) => h('option', { value: String(i) }, n))); el.value = val == null ? '' : String(val); return el; };
     $('emp-list').replaceChildren(...(ids.length ? ids.map(id => {
-      const e = S.employees[id];
-      const name = h('input', { dir: 'auto', value: e.name || '', placeholder: empName(id), 'aria-label': 'الاسم', onchange: ev => { e.name = ev.target.value.trim(); save(); } });
-      const off = h('select', { 'aria-label': 'يوم الإجازة', onchange: ev => { e.off = ev.target.value; save(); } },
-        h('option', { value: '' }, '— مش متحدد —'), ...E.DAY_NAMES.map((n, i) => h('option', { value: String(i) }, n)));
-      off.value = e.off == null ? '' : String(e.off);
-      const hide = h('button', { class: 'small' + (e.hidden ? '' : ' danger'), onclick: () => { e.hidden = !e.hidden; save(); renderEmps(); } }, e.hidden ? 'إظهار' : 'إخفاء');
-      return h('div', { class: 'emp-card', style: e.hidden ? 'opacity:.55' : '' },
-        h('h3', null, h('span', null, `كود ${id}`), hide),
-        h('div', { class: 'row' }, h('div', null, h('label', null, 'الاسم'), name), h('div', null, h('label', null, 'يوم الإجازة الأسبوعية'), off)));
-    }) : [h('div', { class: 'empty' }, 'لسه مفيش موظفين. ارفع ملف الجهاز من شاشة التقرير.')]));
+      const e = S.employees[id], left = e.end && e.end < today;
+      const field = (label, el) => h('div', null, h('label', null, label), el);
+      const del = h('button', { class: 'small danger', onclick: () => {
+        if (!del.dataset.confirm) { del.dataset.confirm = '1'; del.textContent = 'متأكد؟ هيتمسح من كل الشهور'; setTimeout(() => { delete del.dataset.confirm; del.textContent = 'حذف نهائي'; }, 4000); return; }
+        delete S.employees[id]; S.removed[id] = true;
+        for (const k in S.manual) if (k.startsWith(id + '|')) delete S.manual[k];
+        for (const k in S.perms) if (k.startsWith(id + '|')) delete S.perms[k];
+        S.punches = S.punches.filter(p => p.id !== id);
+        if (S.view.emp === id) S.view.emp = '';
+        save(); renderAll();
+      } }, 'حذف نهائي');
+      return h('div', { class: 'emp-card', style: left ? 'opacity:.6' : '' },
+        h('h3', null, h('span', null, `كود ${id}`, left ? h('small', null, ' · ساب الشغل') : null), del),
+        h('div', { class: 'row' },
+          field('الاسم', h('input', { dir: 'auto', value: e.name || '', placeholder: empName(id), onchange: ev => { e.name = ev.target.value.trim(); save(); } })),
+          field('يوم الإجازة الأسبوعية', offSelect(e.off, ev => { e.off = ev.target.value; save(); }))),
+        h('div', { class: 'row', style: 'margin-top:8px' },
+          field('بدأ الشغل يوم', h('input', { type: 'date', value: e.start || '', onchange: ev => { e.start = ev.target.value; save(); } })),
+          field('ساب الشغل يوم (لو مشي)', h('input', { type: 'date', value: e.end || '', onchange: ev => { e.end = ev.target.value; save(); renderEmps(); } }))));
+    }) : [h('div', { class: 'empty' }, 'لسه مفيش موظفين. ارفع ملف الجهاز أو ضيفهم من تحت.')]));
+    if (!$('e-start').value) $('e-start').value = today;
+    if (!$('e-off').options.length) { $('e-off').replaceChildren(h('option', { value: '' }, '— مش متحدد —'), ...E.DAY_NAMES.map((n, i) => h('option', { value: String(i) }, n))); }
   }
   $('e-add').addEventListener('click', () => {
-    const id = $('e-id').value.trim(); if (!id) return;
-    S.employees[id] = Object.assign(S.employees[id] || { off: '' }, { name: $('e-name').value.trim() });
-    $('e-id').value = ''; $('e-name').value = ''; save(); renderEmps();
+    const id = $('e-id').value.trim(), msg = $('e-msg');
+    if (!id) { $('e-id').focus(); return; }
+    if (S.employees[id]) return flash(msg, 'err', `الكود ${id} متسجّل قبل كده باسم ${empName(id)}.`);
+    delete S.removed[id];
+    S.employees[id] = { name: $('e-name').value.trim(), off: $('e-off').value, start: $('e-start').value || todayKey() };
+    flash(msg, 'ok', `اتضاف ${empName(id)}. لازم يتسجّل على جهاز البصمة بنفس الكود ${id}.`);
+    $('e-id').value = ''; $('e-name').value = ''; $('e-off').value = ''; save(); renderAll();
   });
 
   /* ---------- الإعدادات ---------- */
@@ -361,29 +415,30 @@
   numSetting('s-grace', 'grace'); numSetting('s-dedupe', 'dedupeMinutes'); numSetting('s-cut', 'dayCutHour');
 
   $('backup').addEventListener('click', () => {
-    const blob = new Blob([JSON.stringify(S)], { type: 'application/json' });
-    const a = h('a', { href: URL.createObjectURL(blob), download: `attendance_backup_${todayKey()}.json` });
-    document.body.append(a); a.click(); a.remove();
+    saveFile(`attendance_backup_${todayKey()}.json`, 'application/json', null, JSON.stringify(S)).catch(e => alertBox('err', 'مقدرتش أعمل النسخة: ' + (e.message || e)));
   });
   $('restore').addEventListener('change', async ev => {
     const f = ev.target.files[0]; if (!f) return;
     try {
       const obj = JSON.parse(await f.text());
       if (!obj || typeof obj !== 'object' || !obj.settings) throw new Error();
-      S = Object.assign(blank(), obj); save(); $('from').value = ''; $('to').value = ''; renderAll(); alertBox('ok', 'اترجعت النسخة الاحتياطية.');
+      S = Object.assign(blank(), obj); migrate(); save(); $('month').value = thisMonth(); renderAll(); alertBox('ok', 'اترجعت النسخة الاحتياطية.');
     } catch (e) { alertBox('err', 'الملف ده مش نسخة احتياطية سليمة.'); }
     ev.target.value = '';
   });
   $('reset').addEventListener('click', () => {
     const btn = $('reset');
-    if (btn.dataset.confirm) { S = blank(); save(); $('from').value = ''; $('to').value = ''; delete btn.dataset.confirm; btn.textContent = 'مسح كل البيانات'; renderAll(); return; }
+    if (btn.dataset.confirm) { S = blank(); save(); $('month').value = thisMonth(); delete btn.dataset.confirm; btn.textContent = 'مسح كل البيانات'; renderAll(); return; }
     btn.dataset.confirm = '1'; btn.textContent = 'متأكد؟ اضغط تاني للمسح';
     setTimeout(() => { delete btn.dataset.confirm; btn.textContent = 'مسح كل البيانات'; }, 4000);
   });
   function alertBox(kind, msg) { const c = document.querySelector('#tab-settings .card:last-child'); const old = c.querySelector('.alert'); if (old) old.remove(); c.append(h('div', { class: 'alert ' + kind, style: 'margin-top:10px' }, msg)); }
 
   function renderAll() { renderReport(); renderPerms(); renderEmps(); renderSettings(); }
+  migrate(); save();
+  // في تطبيق الأندرويد: نشيل فلتر نوع الملف عشان ملفات .dat من الجهاز تبان في اختيار الملفات
+  if (isNative()) { $('file').removeAttribute('accept'); $('restore').removeAttribute('accept'); }
   renderAll();
 
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  if (!isNative() && 'serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 })();

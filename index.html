@@ -46,6 +46,10 @@ button:disabled{opacity:.5}
 .seg{display:flex;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:3px;gap:3px}
 .seg button{flex:1;background:transparent;color:var(--muted);min-height:38px}
 .seg button.on{background:var(--card);color:var(--accent);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.month-bar{display:flex;align-items:center;gap:8px}
+.month-bar>button{flex:0 0 auto}
+.month-pick{flex:1;position:relative;display:flex;align-items:center;justify-content:center;min-height:44px;border:1px solid var(--line);border-radius:10px;background:var(--bg);margin:0;color:var(--text);font-size:16px}
+.month-pick input{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer}
 .file-drop{display:block;border:2px dashed var(--line);border-radius:var(--radius);padding:18px;text-align:center;cursor:pointer}
 .file-drop strong{color:var(--accent)}
 .file-drop input{display:none}
@@ -133,10 +137,12 @@ dialog h2{margin:0 0 4px;font-size:18px}
 
     <div class="card" id="report-card" hidden>
       <h2>التقرير</h2>
-      <div class="row">
-        <div><label for="from">من</label><input type="date" id="from"></div>
-        <div><label for="to">إلى</label><input type="date" id="to"></div>
+      <div class="month-bar">
+        <button class="small" id="month-prev" aria-label="الشهر اللي فات">‹ اللي فات</button>
+        <label class="month-pick"><b id="month-label"></b><input type="month" id="month" aria-label="اختار الشهر"></label>
+        <button class="small" id="month-next" aria-label="الشهر اللي بعده">اللي بعده ›</button>
       </div>
+      <div class="btns" style="margin-top:6px"><button class="small" id="month-today" hidden>ارجع للشهر الحالي</button></div>
       <div class="row" style="margin-top:10px">
         <div><label>نوع التقرير</label>
           <div class="seg" id="type-seg"><button data-v="summary" class="on">شامل</button><button data-v="detail">مفصّل</button></div></div>
@@ -173,16 +179,21 @@ dialog h2{margin:0 0 4px;font-size:18px}
   <section class="tab" id="tab-emps">
     <div class="card">
       <h2>الموظفين</h2>
-      <p class="muted" style="margin-top:0">الموظفين بيتضافوا لوحدهم من ملف الجهاز. حدد يوم الإجازة الأسبوعية لكل موظف.</p>
+      <p class="muted" style="margin-top:0">الموظفين بيتضافوا لوحدهم من ملف الجهاز. لو موظف مشي اكتب "ساب الشغل يوم" — كده بيفضل في تقارير الشهور القديمة وميظهرش بعد كده. "حذف نهائي" بيمسحه من كل الشهور.</p>
       <div id="emp-list"></div>
     </div>
     <div class="card">
       <h2>إضافة موظف يدوي</h2>
       <div class="row">
         <div><label for="e-id">الكود في الجهاز</label><input id="e-id" inputmode="numeric"></div>
-        <div><label for="e-name">الاسم</label><input id="e-name"></div>
+        <div><label for="e-name">الاسم</label><input id="e-name" dir="auto"></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div><label for="e-off">يوم الإجازة الأسبوعية</label><select id="e-off"></select></div>
+        <div><label for="e-start">بدأ الشغل يوم</label><input type="date" id="e-start"></div>
       </div>
       <div class="btns"><button class="primary" id="e-add">إضافة</button></div>
+      <div id="e-msg"></div>
     </div>
   </section>
 

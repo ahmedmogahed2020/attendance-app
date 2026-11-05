@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">الحضور والانصراف</string>
+    <string name="title_activity_main">الحضور والانصراف</string>
+    <string name="package_name">com.ahmedmogahed.attendance</string>
+    <string name="custom_url_scheme">com.ahmedmogahed.attendance</string>
+</resources>

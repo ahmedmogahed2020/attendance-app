@@ -241,7 +241,7 @@
     const manual = state.manual || {}, perms = state.perms || {};
 
     const ids = new Set(Object.keys(state.employees || {}));
-    for (const k in groups) ids.add(k.split('|')[0]);
+    if (!state.onlyListed) for (const k in groups) ids.add(k.split('|')[0]);
     const from = dayNum(range.from), to = dayNum(range.to);
 
     const result = [];
@@ -253,6 +253,7 @@
       // المرحلة 1: تحديد الحضور/الانصراف والشيفت الواضح
       for (let n = from; n <= to; n++) {
         const key = keyFromNum(n), k = id + '|' + key;
+        if ((emp.start && key < emp.start) || (emp.end && key > emp.end)) continue; // قبل ما يبدأ أو بعد ما ساب الشغل
         const P = groups[k] || [], man = manual[k] || {};
         let tin = null, tout = null;
         if (P.some(p => p.type)) {
@@ -327,6 +328,7 @@
         d.row = row;
       }
       const rows = days.map(d => d.row);
+      if (!rows.length) continue;
       const sum = f => rows.reduce((a, r) => a + (r[f] || 0), 0);
       const count = c => rows.filter(r => r.code === c).length;
       result.push({
