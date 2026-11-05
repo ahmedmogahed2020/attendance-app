@@ -1,0 +1,358 @@
+/* واجهة أبلكيشن الحضور والانصراف */
+(function () {
+  'use strict';
+  const E = window.Engine;
+  const KEY = 'attendance_state_v1';
+  const $ = id => document.getElementById(id);
+
+  /* ---------- الحالة والحفظ ---------- */
+  function blank() {
+    return { settings: JSON.parse(JSON.stringify(E.DEFAULT_SETTINGS)), employees: {}, perms: {}, manual: {}, data: null, fileName: '', range: null, view: { type: 'summary', emp: '' } };
+  }
+  let S = blank();
+  try { const raw = localStorage.getItem(KEY); if (raw) S = Object.assign(blank(), JSON.parse(raw)); } catch (e) { /* التخزين مش متاح */ }
+  S.settings = Object.assign(JSON.parse(JSON.stringify(E.DEFAULT_SETTINGS)), S.settings || {});
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { flash($('import-msg'), 'err', 'مش قادر أحفظ على الموبايل — المساحة ممكن تكون مليانة.'); } }
+
+  /* ---------- أدوات ---------- */
+  function h(tag, attrs, ...kids) {
+    const el = document.createElement(tag);
+    for (const k in (attrs || {})) {
+      const v = attrs[k];
+      if (v == null || v === false) continue;
+      if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+      else if (k === 'class') el.className = v;
+      else if (k === 'value') el.value = v;
+      else el.setAttribute(k, v === true ? '' : v);
+    }
+    for (const c of kids.flat()) if (c != null && c !== false) el.append(c.nodeType ? c : String(c));
+    return el;
+  }
+  function flash(box, kind, msg) { box.replaceChildren(h('div', { class: 'alert ' + kind }, msg)); }
+  const D = E.fmtDur, C = E.fmtClock;
+  const fmtDate = k => { const [y, m, d] = k.split('-'); return `${+d}/${+m}/${y}`; };
+  const shortDate = k => { const [, m, d] = k.split('-'); return `${+d}/${+m}`; };
+  const empName = id => (S.employees[id] && S.employees[id].name) || (S.data && S.data.names && S.data.names[id]) || ('موظف ' + id);
+  const todayKey = () => { const t = new Date(); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`; };
+  const sortedIds = () => Object.keys(S.employees).sort((a, b) => (+a - +b) || a.localeCompare(b));
+
+  /* ---------- التبويبات ---------- */
+  document.querySelectorAll('nav button').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.id === 'tab-' + b.dataset.tab));
+    window.scrollTo(0, 0);
+    renderAll();
+  }));
+
+  /* ---------- قراءة الملف ---------- */
+  $('file').addEventListener('change', async ev => {
+    const f = ev.target.files[0]; if (!f) return;
+    const box = $('import-msg');
+    try {
+      let data = null;
+      const lower = f.name.toLowerCase();
+      if (/\.(dat|txt)$/.test(lower)) {
+        const text = await f.text();
+        const p = E.parseAttlogText(text);
+        if (p) data = { kind: 'raw', punches: p, dates: [], names: {} };
+        else { const wb = XLSX.read(text, { type: 'string' }); data = parseWorkbook(wb); }
+      } else {
+        const buf = await f.arrayBuffer();
+        data = parseWorkbook(XLSX.read(buf, { type: 'array' }));
+      }
+      const range = E.dataRange(data);
+      if (!range) throw new Error('الملف مفيهوش تواريخ');
+      let added = 0;
+      const ids = new Set(data.punches.map(p => p.id).concat(Object.keys(data.names)));
+      for (const id of ids) {
+        if (!S.employees[id]) { S.employees[id] = { name: data.names[id] || '', off: '' }; added++; }
+        else if (!S.employees[id].name && data.names[id]) S.employees[id].name = data.names[id];
+      }
+      S.data = data; S.fileName = f.name; S.range = range;
+      $('from').value = range.from; $('to').value = range.to;
+      save();
+      const kindTxt = data.kind === 'report' ? 'تقرير الجهاز' : 'سجل البصمات الخام';
+      flash(box, 'ok', `تمام — ${kindTxt}: ${ids.size} موظف، ${data.punches.length} بصمة، من ${fmtDate(range.from)} لـ ${fmtDate(range.to)}` + (added ? ` — اتضاف ${added} موظف جديد` : ''));
+      renderAll();
+    } catch (e) {
+      console.error(e);
+      flash(box, 'err', 'مقدرتش أقرا الملف: ' + (e.message || e));
+    }
+    ev.target.value = '';
+  });
+
+  function parseWorkbook(wb) {
+    let best = null, err = null;
+    for (const name of wb.SheetNames) {
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: true, defval: '' });
+      try { const d = E.parseRows(rows); if (!best || d.punches.length > best.punches.length) best = d; } catch (e) { err = e; }
+    }
+    if (!best) throw err || new Error('الملف فاضي');
+    return best;
+  }
+
+  /* ---------- الحساب ---------- */
+  function currentRange() {
+    const f = $('from').value || (S.range && S.range.from), t = $('to').value || (S.range && S.range.to);
+    if (!f || !t) return null;
+    return f <= t ? { from: f, to: t } : { from: t, to: f };
+  }
+  function computeNow() {
+    const r = currentRange(); if (!r || !S.data) return null;
+    return E.compute(S, S.data, r);
+  }
+
+  /* ---------- شاشة التقرير ---------- */
+  function renderReport() {
+    $('file-info').textContent = S.fileName ? `الملف الحالي: ${S.fileName} — اضغط لاختيار ملف تاني` : 'Excel أو ملف السجل (attlog) من الجهاز';
+    $('subtitle').textContent = S.range ? `البيانات من ${fmtDate(S.range.from)} لـ ${fmtDate(S.range.to)}` : 'ارفع ملف جهاز البصمة وطلّع التقرير';
+    const has = !!S.data;
+    $('report-card').hidden = !has;
+    if (!has) { $('missing-card').hidden = true; $('notices').replaceChildren(); $('report-out').replaceChildren(h('div', { class: 'card empty' }, 'لسه مفيش ملف. اختار ملف جهاز البصمة من فوق.')); return; }
+
+    if (!$('from').value && S.range) { $('from').value = S.range.from; $('to').value = S.range.to; }
+    // اختيار الموظف
+    const sel = $('emp-sel'), cur = S.view.emp || '';
+    sel.replaceChildren(h('option', { value: '' }, 'كل الموظفين'), ...sortedIds().filter(id => !S.employees[id].hidden).map(id => h('option', { value: id }, `${empName(id)} (${id})`)));
+    sel.value = cur; if (sel.value !== cur) { S.view.emp = ''; sel.value = ''; }
+    document.querySelectorAll('#type-seg button').forEach(b => b.classList.toggle('on', b.dataset.v === S.view.type));
+
+    const res = computeNow() || [];
+    // تنبيهات
+    const notes = [];
+    const noOff = res.filter(e => !e.offDay).map(e => e.name);
+    if (noOff.length) notes.push(h('div', { class: 'alert warn' }, `مفيش يوم إجازة متحدد لـ: ${noOff.join('، ')}. أيام إجازتهم هتتحسب غياب. `, h('button', { class: 'small', onclick: () => document.querySelector('nav [data-tab=emps]').click() }, 'حدد من هنا')));
+    $('notices').replaceChildren(...notes);
+
+    // البصمات الناقصة
+    const miss = [];
+    for (const e of res) for (const r of e.rows) if (r.code === 'missing') miss.push({ e, r });
+    $('missing-card').hidden = !miss.length;
+    $('missing-count').textContent = miss.length;
+    $('missing-list').replaceChildren(...miss.map(({ e, r }) => {
+      const inp = h('input', { type: 'time', 'aria-label': r.missingField === 'in' ? 'وقت الحضور' : 'وقت الانصراف' });
+      const known = r.missingField === 'in' ? `انصراف ${C(r.out)}` : `حضور ${C(r.in)}`;
+      return h('div', { class: 'miss' },
+        h('div', { class: 'who' }, h('b', null, e.name), `${r.dayName} ${shortDate(r.date)} — ${known} — ناقص ${r.missingField === 'in' ? 'الحضور' : 'الانصراف'}`),
+        inp,
+        h('button', { class: 'small primary', onclick: () => {
+          if (!inp.value) { inp.focus(); return; }
+          const k = e.id + '|' + r.date; const m = S.manual[k] = S.manual[k] || {};
+          m[r.missingField] = inp.value; save(); renderAll();
+        } }, 'حفظ'));
+    }));
+
+    // النتيجة
+    const empSel = S.view.emp;
+    const list = empSel ? res.filter(e => e.id === empSel) : res;
+    const out = $('report-out');
+    if (!list.length) { out.replaceChildren(h('div', { class: 'card empty' }, 'مفيش موظفين في الفترة دي.')); return; }
+    if (S.view.type === 'summary') out.replaceChildren(h('div', { class: 'card' }, h('h2', null, `تقرير شامل — ${fmtDate(currentRange().from)} لـ ${fmtDate(currentRange().to)}`), ...list.map(summaryCard)));
+    else out.replaceChildren(h('div', { class: 'card' }, h('h2', null, `تقرير مفصّل — ${fmtDate(currentRange().from)} لـ ${fmtDate(currentRange().to)}`),
+      h('p', { class: 'muted', style: 'margin-top:0' }, 'اضغط على أي يوم عشان تعدّل الوقت أو تسجّل إذن.'), ...list.map(detailTable)));
+  }
+
+  function stat(label, val, cls) { return h('div', { class: 'stat ' + (cls || '') }, h('b', null, val), h('span', null, label)); }
+  function summaryCard(e) {
+    const s = e.summary;
+    return h('div', { class: 'emp-card' },
+      h('h3', null, e.name, h('small', null, `كود ${e.id}${e.offDay ? ' · إجازته ' + e.offDay : ''}`)),
+      h('div', { class: 'stats' },
+        stat('ساعات العمل', D(s.worked), 'good'),
+        stat('أيام الحضور', s.present + s.offwork),
+        stat('أيام الغياب', s.absent, s.absent ? 'bad' : ''),
+        stat('التأخير', D(s.late), s.late ? 'bad' : ''),
+        stat('انصراف بدري', D(s.early), s.early ? 'bad' : ''),
+        stat('الزيادة', D(s.overtime), s.overtime ? 'good' : ''),
+        stat('تأخير بإذن', D(s.lateExcused)),
+        stat('انصراف بإذن', D(s.earlyExcused)),
+        stat('إجازات', s.off),
+        s.offwork ? stat('شغل يوم إجازة', s.offwork) : null,
+        s.missing ? stat('بصمات ناقصة', s.missing, 'warn') : null));
+  }
+
+  const DETAIL_COLS = ['التاريخ', 'اليوم', 'الشيفت', 'الحضور', 'الانصراف', 'ساعات العمل', 'التأخير', 'تأخير بإذن', 'انصراف بدري', 'انصراف بإذن', 'الزيادة', 'الحالة'];
+  function detailTable(e) {
+    const s = e.summary;
+    const body = e.rows.map(r => h('tr', { class: 'click', onclick: () => openDay(e, r) },
+      h('td', null, shortDate(r.date)), h('td', null, r.dayName), h('td', null, r.shift),
+      h('td', null, C(r.in)), h('td', null, C(r.out)), h('td', null, D(r.worked)),
+      h('td', null, r.late ? D(r.late) : ''), h('td', null, r.lateExcused ? D(r.lateExcused) : ''),
+      h('td', null, r.early ? D(r.early) : ''), h('td', null, r.earlyExcused ? D(r.earlyExcused) : ''),
+      h('td', null, r.overtime ? D(r.overtime) : ''),
+      h('td', null, h('span', { class: 'tag t-' + r.code }, r.status))));
+    const total = h('tr', { class: 'total' }, h('td', { colspan: 5 }, 'الإجمالي'), h('td', null, D(s.worked)), h('td', null, D(s.late)), h('td', null, D(s.lateExcused)),
+      h('td', null, D(s.early)), h('td', null, D(s.earlyExcused)), h('td', null, D(s.overtime)), h('td', null, `حضور ${s.present + s.offwork} · غياب ${s.absent}`));
+    return h('div', null, h('div', { class: 'emp-title' }, `${e.name} — كود ${e.id}`),
+      h('div', { class: 'table-wrap' }, h('table', null, h('thead', null, h('tr', null, DETAIL_COLS.map(c => h('th', null, c)))), h('tbody', null, body, total))));
+  }
+
+  $('type-seg').addEventListener('click', ev => { const b = ev.target.closest('button'); if (!b) return; S.view.type = b.dataset.v; save(); renderReport(); });
+  $('emp-sel').addEventListener('change', ev => { S.view.emp = ev.target.value; save(); renderReport(); });
+  $('from').addEventListener('change', renderReport);
+  $('to').addEventListener('change', renderReport);
+
+  /* ---------- نافذة تعديل اليوم ---------- */
+  let dlgCtx = null;
+  function openDay(e, r) {
+    dlgCtx = { id: e.id, date: r.date };
+    const k = e.id + '|' + r.date, m = S.manual[k] || {}, p = S.perms[k] || {};
+    $('d-title').textContent = `${e.name} — ${r.dayName} ${fmtDate(r.date)}`;
+    $('d-sub').textContent = r.punches ? `بصمات الجهاز: ${r.punches} — ${r.status}` : `مفيش بصمات من الجهاز — ${r.status}`;
+    $('d-in').value = m.in || ''; $('d-out').value = m.out || '';
+    $('d-in').placeholder = C(r.in); $('d-out').placeholder = C(r.out);
+    const sel = $('d-shift');
+    sel.replaceChildren(h('option', { value: '' }, 'تلقائي' + (r.shift && !m.shift ? ` (${r.shift})` : '')), ...S.settings.shifts.map(s => h('option', { value: s.id }, `${s.name} ${s.start}–${s.end}`)));
+    sel.value = m.shift || '';
+    $('d-plate').checked = !!p.late; $('d-pearly').checked = !!p.early;
+    $('day-dlg').showModal();
+  }
+  $('d-cancel').addEventListener('click', () => $('day-dlg').close());
+  $('d-save').addEventListener('click', () => {
+    const k = dlgCtx.id + '|' + dlgCtx.date;
+    const m = { in: $('d-in').value || undefined, out: $('d-out').value || undefined, shift: $('d-shift').value || undefined };
+    if (m.in || m.out || m.shift) S.manual[k] = JSON.parse(JSON.stringify(m)); else delete S.manual[k];
+    setPerm(dlgCtx.id, dlgCtx.date, $('d-plate').checked, $('d-pearly').checked);
+    save(); $('day-dlg').close(); renderAll();
+  });
+  function setPerm(id, date, late, early) {
+    const k = id + '|' + date;
+    if (late || early) S.perms[k] = { late: !!late, early: !!early }; else delete S.perms[k];
+  }
+
+  /* ---------- تصدير Excel ---------- */
+  const dur = min => ({ t: 'n', v: (min || 0) / 1440, z: '[h]:mm' });
+  const txt = v => ({ t: 's', v: v == null ? '' : String(v) });
+  const num = v => ({ t: 'n', v: v || 0 });
+  $('export').addEventListener('click', () => {
+    const res = computeNow(); if (!res) return;
+    const r = currentRange();
+    const list = S.view.emp ? res.filter(e => e.id === S.view.emp) : res;
+    const isSum = S.view.type === 'summary';
+    const title = `${isSum ? 'تقرير شامل' : 'تقرير مفصّل'}${S.view.emp ? ' — ' + list[0].name : ' — كل الموظفين'} — من ${fmtDate(r.from)} إلى ${fmtDate(r.to)}`;
+    const aoa = [[txt(title)], []];
+    let widths;
+    if (isSum) {
+      const head = ['الكود', 'الاسم', 'يوم الإجازة', 'أيام الحضور', 'أيام الغياب', 'إجازات', 'شغل يوم إجازة', 'بصمات ناقصة', 'ساعات العمل', 'التأخير', 'أيام التأخير', 'تأخير بإذن', 'انصراف بدري', 'أيام الانصراف بدري', 'انصراف بدري بإذن', 'الزيادة'];
+      aoa.push(head.map(txt));
+      for (const e of list) {
+        const s = e.summary;
+        aoa.push([txt(e.id), txt(e.name), txt(e.offDay), num(s.present + s.offwork), num(s.absent), num(s.off), num(s.offwork), num(s.missing), dur(s.worked), dur(s.late), num(s.lateDays), dur(s.lateExcused), dur(s.early), num(s.earlyDays), dur(s.earlyExcused), dur(s.overtime)]);
+      }
+      widths = [8, 24, 11, 11, 11, 9, 13, 12, 12, 10, 11, 11, 12, 16, 16, 10];
+    } else {
+      const head = ['الكود', 'الاسم', ...DETAIL_COLS];
+      aoa.push(head.map(txt));
+      for (const e of list) {
+        for (const x of e.rows) aoa.push([txt(e.id), txt(e.name), txt(fmtDate(x.date)), txt(x.dayName), txt(x.shift), txt(C(x.in)), txt(C(x.out)),
+          x.worked == null ? txt('') : dur(x.worked), x.late ? dur(x.late) : txt(''), x.lateExcused ? dur(x.lateExcused) : txt(''),
+          x.early ? dur(x.early) : txt(''), x.earlyExcused ? dur(x.earlyExcused) : txt(''), x.overtime ? dur(x.overtime) : txt(''), txt(x.status)]);
+        const s = e.summary;
+        aoa.push([txt(''), txt(`إجمالي ${e.name}`), txt(''), txt(''), txt(''), txt(''), txt(''), dur(s.worked), dur(s.late), dur(s.lateExcused), dur(s.early), dur(s.earlyExcused), dur(s.overtime),
+          txt(`حضور ${s.present + s.offwork} · غياب ${s.absent} · إجازات ${s.off}${s.missing ? ' · ناقص ' + s.missing : ''}`)]);
+        aoa.push([]);
+      }
+      widths = [8, 22, 12, 10, 9, 9, 9, 11, 9, 11, 11, 13, 9, 30];
+    }
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = widths.map(w => ({ wch: w }));
+    ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: widths.length - 1 } }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, isSum ? 'شامل' : 'مفصل');
+    wb.Workbook = { Views: [{ RTL: true }] };
+    const fname = `attendance_${isSum ? 'summary' : 'detailed'}${S.view.emp ? '_emp' + S.view.emp : '_all'}_${r.from}_to_${r.to}.xlsx`;
+    const out = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+    const blob = new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const a = h('a', { href: URL.createObjectURL(blob), download: fname });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  });
+
+  /* ---------- الأذونات ---------- */
+  function renderPerms() {
+    const sel = $('p-emp'), cur = sel.value;
+    sel.replaceChildren(...sortedIds().filter(id => !S.employees[id].hidden).map(id => h('option', { value: id }, `${empName(id)} (${id})`)));
+    if (cur) sel.value = cur;
+    if (!$('p-date').value) $('p-date').value = todayKey();
+    const items = Object.entries(S.perms).map(([k, v]) => { const [id, date] = k.split('|'); return { id, date, ...v }; })
+      .sort((a, b) => b.date.localeCompare(a.date) || a.id.localeCompare(b.id));
+    $('p-list').replaceChildren(...(items.length ? items.map(p => h('div', { class: 'list-item' },
+      h('div', null, h('b', null, empName(p.id)), h('div', { class: 'muted' }, `${E.DAY_NAMES[E.weekday(p.date)]} ${fmtDate(p.date)} — ${[p.late && 'تأخير بإذن', p.early && 'انصراف بدري بإذن'].filter(Boolean).join(' + ')}`)),
+      h('button', { class: 'small danger', onclick: () => { delete S.perms[p.id + '|' + p.date]; save(); renderAll(); } }, 'حذف'))) : [h('div', { class: 'empty' }, 'مفيش أذونات لسه.')]));
+  }
+  $('p-add').addEventListener('click', () => {
+    const id = $('p-emp').value, date = $('p-date').value, late = $('p-late').checked, early = $('p-early').checked;
+    if (!id) return flash($('p-msg'), 'err', 'مفيش موظفين — ارفع ملف الجهاز أو ضيف موظف الأول.');
+    if (!date) return flash($('p-msg'), 'err', 'اختار اليوم.');
+    if (!late && !early) return flash($('p-msg'), 'err', 'اختار نوع الإذن.');
+    const k = id + '|' + date, old = S.perms[k] || {};
+    setPerm(id, date, late || old.late, early || old.early); save();
+    flash($('p-msg'), 'ok', `اتسجّل الإذن لـ ${empName(id)} يوم ${fmtDate(date)}`);
+    renderPerms();
+  });
+
+  /* ---------- الموظفين ---------- */
+  function renderEmps() {
+    const ids = sortedIds();
+    $('emp-list').replaceChildren(...(ids.length ? ids.map(id => {
+      const e = S.employees[id];
+      const name = h('input', { dir: 'auto', value: e.name || '', placeholder: empName(id), 'aria-label': 'الاسم', onchange: ev => { e.name = ev.target.value.trim(); save(); } });
+      const off = h('select', { 'aria-label': 'يوم الإجازة', onchange: ev => { e.off = ev.target.value; save(); } },
+        h('option', { value: '' }, '— مش متحدد —'), ...E.DAY_NAMES.map((n, i) => h('option', { value: String(i) }, n)));
+      off.value = e.off == null ? '' : String(e.off);
+      const hide = h('button', { class: 'small' + (e.hidden ? '' : ' danger'), onclick: () => { e.hidden = !e.hidden; save(); renderEmps(); } }, e.hidden ? 'إظهار' : 'إخفاء');
+      return h('div', { class: 'emp-card', style: e.hidden ? 'opacity:.55' : '' },
+        h('h3', null, h('span', null, `كود ${id}`), hide),
+        h('div', { class: 'row' }, h('div', null, h('label', null, 'الاسم'), name), h('div', null, h('label', null, 'يوم الإجازة الأسبوعية'), off)));
+    }) : [h('div', { class: 'empty' }, 'لسه مفيش موظفين. ارفع ملف الجهاز من شاشة التقرير.')]));
+  }
+  $('e-add').addEventListener('click', () => {
+    const id = $('e-id').value.trim(); if (!id) return;
+    S.employees[id] = Object.assign(S.employees[id] || { off: '' }, { name: $('e-name').value.trim() });
+    $('e-id').value = ''; $('e-name').value = ''; save(); renderEmps();
+  });
+
+  /* ---------- الإعدادات ---------- */
+  function renderSettings() {
+    const st = S.settings;
+    $('s-grace').value = st.grace; $('s-dedupe').value = st.dedupeMinutes; $('s-cut').value = st.dayCutHour;
+    $('shift-list').replaceChildren(...st.shifts.map((s, i) => h('div', { class: 'shift-row' },
+      h('div', null, h('label', null, 'الاسم'), h('input', { value: s.name, onchange: ev => { s.name = ev.target.value; save(); } })),
+      h('div', null, h('label', null, 'البداية'), h('input', { type: 'time', value: s.start, onchange: ev => { s.start = ev.target.value; save(); } })),
+      h('div', null, h('label', null, 'النهاية'), h('input', { type: 'time', value: s.end, onchange: ev => { s.end = ev.target.value; save(); } })),
+      h('button', { class: 'small danger', disabled: st.shifts.length <= 1, onclick: () => { st.shifts.splice(i, 1); save(); renderSettings(); } }, 'حذف'))));
+  }
+  $('shift-add').addEventListener('click', () => {
+    const ids = new Set(S.settings.shifts.map(s => s.id)); let n = 1; while (ids.has('s' + n)) n++;
+    S.settings.shifts.push({ id: 's' + n, name: 'شيفت ' + (S.settings.shifts.length + 1), start: '08:00', end: '16:00' }); save(); renderSettings();
+  });
+  const numSetting = (id, key) => $(id).addEventListener('change', ev => { const v = parseInt(ev.target.value, 10); if (!isNaN(v) && v >= 0) { S.settings[key] = v; save(); } });
+  numSetting('s-grace', 'grace'); numSetting('s-dedupe', 'dedupeMinutes'); numSetting('s-cut', 'dayCutHour');
+
+  $('backup').addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify(S)], { type: 'application/json' });
+    const a = h('a', { href: URL.createObjectURL(blob), download: `attendance_backup_${todayKey()}.json` });
+    document.body.append(a); a.click(); a.remove();
+  });
+  $('restore').addEventListener('change', async ev => {
+    const f = ev.target.files[0]; if (!f) return;
+    try {
+      const obj = JSON.parse(await f.text());
+      if (!obj || typeof obj !== 'object' || !obj.settings) throw new Error();
+      S = Object.assign(blank(), obj); save(); $('from').value = ''; $('to').value = ''; renderAll(); alertBox('ok', 'اترجعت النسخة الاحتياطية.');
+    } catch (e) { alertBox('err', 'الملف ده مش نسخة احتياطية سليمة.'); }
+    ev.target.value = '';
+  });
+  $('reset').addEventListener('click', () => {
+    const btn = $('reset');
+    if (btn.dataset.confirm) { S = blank(); save(); $('from').value = ''; $('to').value = ''; delete btn.dataset.confirm; btn.textContent = 'مسح كل البيانات'; renderAll(); return; }
+    btn.dataset.confirm = '1'; btn.textContent = 'متأكد؟ اضغط تاني للمسح';
+    setTimeout(() => { delete btn.dataset.confirm; btn.textContent = 'مسح كل البيانات'; }, 4000);
+  });
+  function alertBox(kind, msg) { const c = document.querySelector('#tab-settings .card:last-child'); const old = c.querySelector('.alert'); if (old) old.remove(); c.append(h('div', { class: 'alert ' + kind, style: 'margin-top:10px' }, msg)); }
+
+  function renderAll() { renderReport(); renderPerms(); renderEmps(); renderSettings(); }
+  renderAll();
+
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+})();

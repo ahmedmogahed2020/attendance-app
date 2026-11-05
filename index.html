@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>الحضور والانصراف</title>
+<meta name="theme-color" content="#0f766e">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<style>
+:root{
+  --bg:#f4f6f5;--card:#ffffff;--text:#16211e;--muted:#5f6d69;--line:#dde4e1;
+  --accent:#0f766e;--accent-2:#e6f3f1;--danger:#b42318;--danger-bg:#fdecea;
+  --warn:#9a5b00;--warn-bg:#fff4dc;--ok:#127a3a;--ok-bg:#e5f5ea;--off:#4a5a8a;--off-bg:#eaeefa;
+  --radius:14px;
+}
+@media (prefers-color-scheme: dark){
+  :root{--bg:#0f1514;--card:#18201f;--text:#e7efec;--muted:#9aaba6;--line:#2a3532;
+    --accent:#2bb3a5;--accent-2:#16302d;--danger:#ff8a80;--danger-bg:#3a1c1a;
+    --warn:#ffc266;--warn-bg:#3a2c12;--ok:#6fd99a;--ok-bg:#16301f;--off:#a9b8ec;--off-bg:#1f2640;}
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text)}
+body{font-family:"Segoe UI",Tahoma,"Noto Sans Arabic","Geeza Pro",system-ui,sans-serif;font-size:16px;line-height:1.5;
+  padding-bottom:calc(76px + env(safe-area-inset-bottom))}
+header{position:sticky;top:0;z-index:5;background:var(--accent);color:#fff;padding:14px 16px calc(14px) ;padding-top:calc(14px + env(safe-area-inset-top))}
+header h1{margin:0;font-size:19px;font-weight:700}
+header p{margin:2px 0 0;font-size:13px;opacity:.85}
+main{max-width:760px;margin:0 auto;padding:14px 16px}
+.tab{display:none}.tab.on{display:block}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px;margin-bottom:14px}
+.card h2{margin:0 0 10px;font-size:17px}
+.muted{color:var(--muted);font-size:14px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+.row>*{flex:1 1 140px}
+label{display:block;font-size:13px;color:var(--muted);margin-bottom:4px}
+input,select,button{font:inherit;color:inherit}
+input,select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);min-height:44px}
+button{border:0;border-radius:10px;padding:10px 14px;min-height:44px;cursor:pointer;background:var(--accent-2);color:var(--accent);font-weight:600}
+button.primary{background:var(--accent);color:#fff}
+button.danger{background:var(--danger-bg);color:var(--danger)}
+button.small{min-height:36px;padding:6px 10px;font-size:14px}
+button:disabled{opacity:.5}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.seg{display:flex;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:3px;gap:3px}
+.seg button{flex:1;background:transparent;color:var(--muted);min-height:38px}
+.seg button.on{background:var(--card);color:var(--accent);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.file-drop{display:block;border:2px dashed var(--line);border-radius:var(--radius);padding:18px;text-align:center;cursor:pointer}
+.file-drop strong{color:var(--accent)}
+.file-drop input{display:none}
+.alert{border-radius:12px;padding:10px 12px;margin-bottom:10px;font-size:14px}
+.alert.warn{background:var(--warn-bg);color:var(--warn)}
+.alert.err{background:var(--danger-bg);color:var(--danger)}
+.alert.ok{background:var(--ok-bg);color:var(--ok)}
+.miss{display:grid;grid-template-columns:1fr 120px auto;gap:8px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.miss:first-of-type{border-top:0}
+.miss .who{font-size:14px}
+.miss .who b{display:block;font-size:15px}
+.emp-card{border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px}
+.emp-card h3{margin:0 0 8px;font-size:16px;display:flex;justify-content:space-between;gap:8px}
+.emp-card h3 small{color:var(--muted);font-weight:400}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.stat{background:var(--bg);border-radius:10px;padding:8px;text-align:center}
+.stat b{display:block;font-size:17px;font-variant-numeric:tabular-nums}
+.stat span{font-size:12px;color:var(--muted)}
+.stat.bad b{color:var(--danger)}.stat.good b{color:var(--ok)}.stat.warn b{color:var(--warn)}
+.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;margin-bottom:12px}
+table{border-collapse:collapse;width:100%;font-size:14px;font-variant-numeric:tabular-nums}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap;text-align:right}
+th{background:var(--bg);color:var(--muted);font-weight:600;position:sticky;top:0}
+tr.click{cursor:pointer}
+tr.click:active td{background:var(--accent-2)}
+tr.total td{font-weight:700;background:var(--accent-2)}
+.tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}
+.t-present{background:var(--ok-bg);color:var(--ok)}
+.t-absent{background:var(--danger-bg);color:var(--danger)}
+.t-missing{background:var(--warn-bg);color:var(--warn)}
+.t-off,.t-offwork{background:var(--off-bg);color:var(--off)}
+.emp-title{font-weight:700;margin:14px 0 6px}
+.list-item{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+.list-item:first-child{border-top:0}
+.chk{display:flex;gap:16px;flex-wrap:wrap;margin:6px 0}
+.chk label{display:flex;align-items:center;gap:6px;color:var(--text);font-size:15px;margin:0}
+.chk input{width:20px;height:20px;min-height:0}
+.shift-row{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end;margin-bottom:8px}
+nav{position:fixed;bottom:0;inset-inline:0;z-index:6;background:var(--card);border-top:1px solid var(--line);display:flex;padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;background:transparent;border-radius:0;color:var(--muted);display:flex;flex-direction:column;align-items:center;gap:2px;font-size:12px;padding:8px 0;min-height:60px}
+nav button svg{width:24px;height:24px}
+nav button.on{color:var(--accent)}
+dialog{border:0;border-radius:var(--radius);padding:0;width:min(92vw,460px);background:var(--card);color:var(--text)}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+dialog .in{padding:16px}
+dialog h2{margin:0 0 4px;font-size:18px}
+.empty{text-align:center;color:var(--muted);padding:20px 8px}
+@media (max-width:420px){.stats{grid-template-columns:repeat(2,1fr)}.miss{grid-template-columns:1fr 110px}.miss button{grid-column:1/-1}.shift-row{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>الحضور والانصراف</h1>
+  <p id="subtitle">ارفع ملف جهاز البصمة وطلّع التقرير</p>
+</header>
+
+<main>
+  <!-- التقرير -->
+  <section class="tab on" id="tab-report">
+    <div class="card">
+      <h2>ملف جهاز البصمة</h2>
+      <label class="file-drop" for="file">
+        <input type="file" id="file" accept=".xls,.xlsx,.csv,.txt,.dat">
+        <strong>اختار الملف</strong>
+        <div class="muted" id="file-info">Excel أو ملف السجل (attlog) من الجهاز</div>
+      </label>
+      <div id="import-msg"></div>
+    </div>
+
+    <div id="notices"></div>
+
+    <div class="card" id="missing-card" hidden>
+      <h2>بصمات ناقصة <span class="tag t-missing" id="missing-count"></span></h2>
+      <p class="muted" style="margin-top:0">اكتب الوقت الناقص واضغط حفظ. لحد ما تكتبه، اليوم ده مش هيتحسب.</p>
+      <div id="missing-list"></div>
+    </div>
+
+    <div class="card" id="report-card" hidden>
+      <h2>التقرير</h2>
+      <div class="row">
+        <div><label for="from">من</label><input type="date" id="from"></div>
+        <div><label for="to">إلى</label><input type="date" id="to"></div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <div><label>نوع التقرير</label>
+          <div class="seg" id="type-seg"><button data-v="summary" class="on">شامل</button><button data-v="detail">مفصّل</button></div></div>
+        <div><label for="emp-sel">الموظف</label><select id="emp-sel"></select></div>
+      </div>
+      <div class="btns"><button class="primary" id="export">تحميل Excel</button></div>
+    </div>
+
+    <div id="report-out"></div>
+  </section>
+
+  <!-- الأذونات -->
+  <section class="tab" id="tab-perms">
+    <div class="card">
+      <h2>إضافة إذن</h2>
+      <div class="row">
+        <div><label for="p-emp">الموظف</label><select id="p-emp"></select></div>
+        <div><label for="p-date">اليوم</label><input type="date" id="p-date"></div>
+      </div>
+      <div class="chk">
+        <label><input type="checkbox" id="p-late" checked> تأخير بإذن</label>
+        <label><input type="checkbox" id="p-early"> انصراف بدري بإذن</label>
+      </div>
+      <div class="btns"><button class="primary" id="p-add">حفظ الإذن</button></div>
+      <div id="p-msg"></div>
+    </div>
+    <div class="card">
+      <h2>الأذونات المسجلة</h2>
+      <div id="p-list"></div>
+    </div>
+  </section>
+
+  <!-- الموظفين -->
+  <section class="tab" id="tab-emps">
+    <div class="card">
+      <h2>الموظفين</h2>
+      <p class="muted" style="margin-top:0">الموظفين بيتضافوا لوحدهم من ملف الجهاز. حدد يوم الإجازة الأسبوعية لكل موظف.</p>
+      <div id="emp-list"></div>
+    </div>
+    <div class="card">
+      <h2>إضافة موظف يدوي</h2>
+      <div class="row">
+        <div><label for="e-id">الكود في الجهاز</label><input id="e-id" inputmode="numeric"></div>
+        <div><label for="e-name">الاسم</label><input id="e-name"></div>
+      </div>
+      <div class="btns"><button class="primary" id="e-add">إضافة</button></div>
+    </div>
+  </section>
+
+  <!-- الإعدادات -->
+  <section class="tab" id="tab-settings">
+    <div class="card">
+      <h2>الشيفتات</h2>
+      <p class="muted" style="margin-top:0">الأبلكيشن بيعرف شيفت الموظف لوحده من أقرب ميعاد بداية لأول بصمة.</p>
+      <div id="shift-list"></div>
+      <div class="btns"><button id="shift-add">+ شيفت جديد</button></div>
+    </div>
+    <div class="card">
+      <h2>قواعد الحساب</h2>
+      <div class="row">
+        <div><label for="s-grace">فترة السماح في التأخير (دقيقة)</label><input type="number" id="s-grace" min="0" inputmode="numeric"></div>
+        <div><label for="s-dedupe">بصمتين ورا بعض في أقل من (دقيقة) = بصمة واحدة</label><input type="number" id="s-dedupe" min="0" inputmode="numeric"></div>
+        <div><label for="s-cut">البصمة قبل الساعة دي الفجر تتبع اليوم اللي قبله</label><input type="number" id="s-cut" min="0" max="12" inputmode="numeric"></div>
+      </div>
+      <p class="muted">التأخير بيتحسب بعد فترة السماح بس (جه 10:20 والسماح 15 = 5 دقايق تأخير). الانصراف بدري بيتحسب من أول دقيقة. الزيادة = الوقت بعد نهاية الشيفت. الشغل يوم الإجازة كله زيادة.</p>
+    </div>
+    <div class="card">
+      <h2>نسخة احتياطية</h2>
+      <p class="muted" style="margin-top:0">كل البيانات محفوظة على الموبايل ده بس. احفظ نسخة كل فترة عشان لو اتمسحت أو غيرت الموبايل.</p>
+      <div class="btns">
+        <button class="primary" id="backup">حفظ نسخة احتياطية</button>
+        <label class="file-drop" style="padding:10px;flex:1;border-width:1px" for="restore"><input type="file" id="restore" accept=".json"><strong>استرجاع نسخة</strong></label>
+      </div>
+      <div class="btns"><button class="danger" id="reset">مسح كل البيانات</button></div>
+    </div>
+  </section>
+</main>
+
+<nav>
+  <button data-tab="report" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>التقرير</button>
+  <button data-tab="perms"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>الأذونات</button>
+  <button data-tab="emps"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5c2 .6 3.2 2.5 3.5 5.5"/></svg>الموظفين</button>
+  <button data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>الإعدادات</button>
+</nav>
+
+<dialog id="day-dlg"><div class="in">
+  <h2 id="d-title"></h2>
+  <p class="muted" id="d-sub" style="margin-top:0"></p>
+  <div class="row">
+    <div><label for="d-in">الحضور</label><input type="time" id="d-in"></div>
+    <div><label for="d-out">الانصراف</label><input type="time" id="d-out"></div>
+  </div>
+  <div style="margin-top:10px"><label for="d-shift">الشيفت</label><select id="d-shift"></select></div>
+  <div class="chk" style="margin-top:10px">
+    <label><input type="checkbox" id="d-plate"> تأخير بإذن</label>
+    <label><input type="checkbox" id="d-pearly"> انصراف بدري بإذن</label>
+  </div>
+  <p class="muted" style="margin:4px 0 0">سيب خانة الوقت فاضية عشان ياخد وقت البصمة من الجهاز.</p>
+  <div class="btns">
+    <button class="primary" id="d-save">حفظ</button>
+    <button id="d-cancel">إلغاء</button>
+  </div>
+</div></dialog>
+
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="engine.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
