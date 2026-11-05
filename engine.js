@@ -224,6 +224,9 @@
   function tinDev(P) { if (!P.length) return null; if (P.some(p => p.type)) { const a = P.filter(p => p.type === 'in'); return a.length ? a[0].t : null; } return P[0].t; }
   function toutDev(P) { if (!P.length) return null; if (P.some(p => p.type)) { const a = P.filter(p => p.type === 'out'); return a.length ? a[a.length - 1].t : null; } return P.length > 1 ? P[P.length - 1].t : null; }
 
+  /** ساعات الموظف بالدقايق (0 = حسب الشيفت) */
+  function hoursOf(emp) { const h = parseFloat(emp && emp.hours); return h > 0 && h < 24 ? Math.round(h * 60) : 0; }
+
   function nearestShift(t, shifts, field) {
     let best = null, bd = Infinity, second = Infinity;
     for (const s of shifts) {
@@ -326,10 +329,13 @@
           row.worked = d.tout - d.tin;
           const s = d.shift;
           if (s) {
+            // نهاية اليوم = بداية الشيفت + ساعات الموظف (لو متحددة) أو نهاية الشيفت
+            const en = hoursOf(emp) ? s.st + hoursOf(emp) : s.en;
+            row.required = en - s.st;
             const rawLate = d.tin - s.st;
             let late = rawLate > grace ? rawLate - grace : 0;
-            let early = Math.max(0, s.en - d.tout);
-            row.overtime = Math.max(0, d.tout - s.en);
+            let early = Math.max(0, en - d.tout);
+            row.overtime = Math.max(0, d.tout - en);
             if (perm.late && late > 0) { row.lateExcused = late; late = 0; }
             if (perm.early && early > 0) { row.earlyExcused = early; early = 0; }
             row.late = late; row.early = early;
@@ -349,7 +355,7 @@
         rows,
         summary: {
           present: count('present'), absent: count('absent'), excused: count('excused'), leave: count('leave'), pending: count('pending'), off: count('off'), offwork: count('offwork'), missing: count('missing'),
-          worked: sum('worked'), late: sum('late'), lateDays: rows.filter(r => r.late > 0).length,
+          worked: sum('worked'), required: sum('required'), late: sum('late'), lateDays: rows.filter(r => r.late > 0).length,
           lateExcused: sum('lateExcused'), early: sum('early'), earlyDays: rows.filter(r => r.early > 0).length,
           earlyExcused: sum('earlyExcused'), overtime: sum('overtime')
         }
@@ -364,5 +370,5 @@
     return { from: ks[0], to: ks[ks.length - 1] };
   }
 
-  return { DEFAULT_SETTINGS, DAY_NAMES, parseRows, parseAttlogText, compute, dataRange, fmtClock, fmtDur, hm, weekday, dayNum, keyFromNum };
+  return { hoursOf, DEFAULT_SETTINGS, DAY_NAMES, parseRows, parseAttlogText, compute, dataRange, fmtClock, fmtDur, hm, weekday, dayNum, keyFromNum };
 });

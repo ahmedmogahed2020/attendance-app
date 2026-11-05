@@ -151,6 +151,31 @@ tr.tot td{font-weight:700;background:var(--teal-soft);cursor:default}
 td.bad{color:var(--rose)}td.good{color:var(--green)}
 .emp-title{display:flex;justify-content:space-between;align-items:center;margin:4px 4px 8px;font-weight:600}
 
+.ctrls .seg.three{flex:0 0 190px;grid-template-columns:repeat(3,1fr)}
+/* الرسوم */
+:root{--c1:#1E8C6E;--c2:#6A5FC1;--c3:#C2485F;--c4:#A68510}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--c1:#279677;--c2:#7D70D6;--c3:#D14F6A;--c4:#AD8D10}}
+:root[data-theme="dark"]{--c1:#279677;--c2:#7D70D6;--c3:#D14F6A;--c4:#AD8D10}
+.chart h2{margin-bottom:8px}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12.5px;color:var(--muted);margin-bottom:8px}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
+svg.cols{width:100%;height:auto;display:block;overflow:visible}
+svg.cols .grid{stroke:var(--line);stroke-width:1}
+svg.cols .ref{stroke:var(--muted);stroke-width:1.2;stroke-dasharray:0}
+svg.cols .tick{fill:var(--muted);font-size:10px;font-family:var(--f-body)}
+svg.cols .ref-t{fill:var(--ink);font-weight:600}
+svg.cols .hl{fill:var(--soft)}
+.cap{font-size:13px;color:var(--ink);background:var(--bg);border-radius:10px;padding:7px 10px;margin-top:8px;min-height:34px}
+.hbars{display:grid;gap:8px}
+.hb{display:grid;grid-template-columns:minmax(0,34%) 1fr auto;align-items:center;gap:8px;font-size:13px}
+.hb-l{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hb-t{height:14px;display:flex;justify-content:flex-start}
+.hb-b{height:14px;border-radius:0 4px 4px 0}
+[dir=rtl] .hb-b{border-radius:4px 0 0 4px}
+.hb-v{font-variant-numeric:tabular-nums;font-weight:600;min-width:42px;text-align:left}
+.stackbar{display:flex;gap:2px;height:22px;border-radius:6px;overflow:hidden}
+.stackbar span{display:block;min-width:4px}
 /* الموظفين */
 .list{background:var(--paper);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:var(--shadow)}
 .li{display:flex;align-items:center;gap:12px;width:100%;text-align:right;background:transparent;border:0;border-top:1px solid var(--line);padding:12px 14px;cursor:pointer}
@@ -220,7 +245,7 @@ html,body{overflow-x:hidden}
 
 <nav class="bottom">
   <button data-tab="day" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/><path d="m9 15 2 2 4-4"/></svg>اليوم<span class="badge" id="badge-day" hidden></span></button>
-  <button data-tab="month"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20V11M10 20V5M16 20v-6M21 20H3"/></svg>الشهر</button>
+  <button data-tab="month"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20V11M10 20V5M16 20v-6M21 20H3"/></svg>التقارير</button>
   <button data-tab="emps"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5c2 .6 3.2 2.5 3.5 5.5"/></svg>الموظفين</button>
   <button data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>الإعدادات</button>
 </nav>

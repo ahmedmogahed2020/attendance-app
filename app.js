@@ -11,7 +11,7 @@
     return {
       settings: clone(E.DEFAULT_SETTINGS), employees: {}, perms: {}, manual: {}, punches: [], names: {}, removed: {}, imports: [],
       view: { type: 'summary', emp: '' },
-      backup: { freq: 'off', day: 5, time: '23:00', keep: 10, last: '' }
+      backup: { freq: 'daily', day: 5, time: '23:00', keep: 10, last: '', init: 1 }
     };
   }
   let S = blank();
@@ -19,6 +19,7 @@
   function normalize() {
     S.settings = Object.assign(clone(E.DEFAULT_SETTINGS), S.settings || {});
     S.backup = Object.assign(blank().backup, S.backup || {});
+    if (!S.backup.init) { S.backup.freq = 'daily'; S.backup.init = 1; } // النسخة التلقائية اليومية شغالة من الأول
     S.view = Object.assign(blank().view, S.view || {});
     // النسخة الأولى كانت بتحفظ آخر ملف بس — نحوّله لسجل البصمات المتجمع
     if (S.data) { mergePunches(S.data.punches || []); Object.assign(S.names, S.data.names || {}); delete S.data; delete S.fileName; delete S.range; }
@@ -112,6 +113,11 @@
     const best = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
     return shifts.find(s => s.id === best) || shifts[0];
   }
+  /** مواعيد اليوم لموظف في شيفت: البداية + ساعاته (لو متحددة) */
+  function shiftTimes(id, s) {
+    const h = E.hoursOf(S.employees[id]); if (!h) return { start: s.start, end: s.end };
+    const st = E.hm(s.start) + h; return { start: s.start, end: `${pad(Math.floor(st / 60) % 24)}:${pad(st % 60)}` };
+  }
   function setManual(id, date, patch) {
     const k = id + '|' + date, m = Object.assign({}, S.manual[k] || {}, patch);
     for (const f in m) if (m[f] == null || m[f] === '') delete m[f];
@@ -120,7 +126,7 @@
   }
 
   /* ======================= التنقل ======================= */
-  const UI = { tab: 'day', date: todayKey(), month: monthOf(todayKey()), openPresent: new Set(), focusEmp: '' };
+  const UI = { tab: 'day', date: todayKey(), month: monthOf(todayKey()), rmode: 'month', range: { from: monthOf(todayKey()) + '-01', to: todayKey() }, openPresent: new Set(), focusEmp: '' };
   document.querySelectorAll('nav.bottom button').forEach(b => b.addEventListener('click', () => go(b.dataset.tab)));
   function go(tab) {
     UI.tab = tab;
@@ -180,7 +186,7 @@
     if (!future && pendingOnly.length > 1) {
       kids.push(h('div', { class: 'card', style: 'padding:10px 12px' }, h('div', { class: 'muted', style: 'margin-bottom:8px' }, `${pendingOnly.length} موظف ملهمش أي تسجيل اليوم ده:`),
         h('div', { class: 'btns' },
-          h('button', { class: 'btn sm primary', onclick: () => { for (const { e } of pendingOnly) { const s = usualShift(e.id); setManual(e.id, date, { in: s.start, out: s.end, absence: null }); } toast('اتسجّلوا حضور بمواعيد الشيفت'); render(); } }, 'كلهم حضور بمواعيد الشيفت'),
+          h('button', { class: 'btn sm primary', onclick: () => { for (const { e } of pendingOnly) { const t = shiftTimes(e.id, usualShift(e.id)); setManual(e.id, date, { in: t.start, out: t.end, absence: null }); } toast('اتسجّلوا حضور بمواعيد الشيفت'); render(); } }, 'كلهم حضور بمواعيد الشيفت'),
           h('button', { class: 'btn sm danger', onclick: ev => confirmBtn(ev.currentTarget, 'متأكد؟ اضغط تاني', () => { for (const { e } of pendingOnly) setManual(e.id, date, { absence: 'absent' }); toast('اتسجّلوا غياب'); render(); }) }, 'كلهم غياب'))));
     }
     for (const x of rows) kids.push(dayCard(x.e, x.r, future));
@@ -232,8 +238,8 @@
       shiftSel.value = man.shift || '';
       const tools = [shiftSel];
       if (r.in == null || r.out == null) tools.push(h('button', { class: 'btn ghost sm', onclick: () => {
-        const s = S.settings.shifts.find(x => x.id === man.shift) || usualShift(e.id);
-        setManual(e.id, r.date, { in: r.in == null ? s.start : man.in, out: r.out == null ? s.end : man.out }); render();
+        const t = shiftTimes(e.id, S.settings.shifts.find(x => x.id === man.shift) || usualShift(e.id));
+        setManual(e.id, r.date, { in: r.in == null ? t.start : man.in, out: r.out == null ? t.end : man.out }); render();
       } }, 'املا بمواعيد الشيفت'));
       body.push(h('div', { class: 'row-tools' }, ...tools));
       const tg = (f, label) => h('button', { class: 'tg' + (perm[f] ? ' on' : ''), onclick: () => {
@@ -253,46 +259,162 @@
       hasManual && r.punches ? h('div', { style: 'margin-top:6px;text-align:left' }, h('button', { class: 'btn ghost sm', onclick: () => { delete S.manual[k]; UI.openPresent.delete(k); save(); render(); toast('رجع زي بيانات الجهاز'); } }, 'رجّع زي الجهاز')) : null);
   }
 
-  /* ======================= شاشة الشهر ======================= */
+  /* ======================= شاشة التقارير ======================= */
+  function reportRange() {
+    const today = todayKey();
+    if (UI.rmode === 'range') {
+      let { from, to } = UI.range; if (from > to) [from, to] = [to, from];
+      return { from, to: to > today ? today : to, end: to, future: from > today, label: `من ${fmtDate(from)} لـ ${fmtDate(to)}`, tag: `${from}_to_${to}` };
+    }
+    return Object.assign(monthRange(UI.month), { label: monthLabel(UI.month), tag: UI.month });
+  }
   function renderMonth() {
-    const root = $('tab-month'), m = UI.month, rng = monthRange(m);
-    $('subtitle').textContent = 'تقرير ' + monthLabel(m);
-    const shiftM = d => { const [y, mo] = m.split('-').map(Number), t = new Date(y, mo - 1 + d, 1); UI.month = `${t.getFullYear()}-${pad(t.getMonth() + 1)}`; render(); };
-    const kids = [navBar(monthLabel(m), m === monthOf(todayKey()) ? 'الشهر الحالي' : 'شهر قديم', 'month', m, v => { UI.month = v; render(); }, () => shiftM(-1), () => shiftM(1))];
-    if (rng.future) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'الشهر ده لسه مجاش'))); return; }
+    const root = $('tab-month'), today = todayKey();
+    const rmBtn = (v, l) => h('button', { class: UI.rmode === v ? 'on' : '', onclick: () => { UI.rmode = v; render(); } }, l);
+    const kids = [h('div', { class: 'seg two', style: 'margin:0 0 10px' }, rmBtn('month', 'شهر'), rmBtn('range', 'فترة معيّنة'))];
+    if (UI.rmode === 'range') {
+      const dIn = (f, l) => h('div', null, h('label', { class: 'f' }, l), h('input', { type: 'date', value: UI.range[f], onchange: ev => { if (ev.target.value) { UI.range[f] = ev.target.value; render(); } } }));
+      const quick = (l, from, to) => h('button', { class: 'btn sm', onclick: () => { UI.range = { from, to }; render(); } }, l);
+      kids.push(h('div', { class: 'grid2', style: 'margin-bottom:8px' }, dIn('from', 'من'), dIn('to', 'لـ')),
+        h('div', { class: 'btns', style: 'margin-bottom:12px' }, quick('آخر 7 أيام', addDays(today, -6), today), quick('آخر 30 يوم', addDays(today, -29), today), quick('من أول الشهر', monthOf(today) + '-01', today)));
+    } else {
+      const m = UI.month, shiftM = d => { const [y, mo] = m.split('-').map(Number), t = new Date(y, mo - 1 + d, 1); UI.month = `${t.getFullYear()}-${pad(t.getMonth() + 1)}`; render(); };
+      kids.push(navBar(monthLabel(m), m === monthOf(today) ? 'الشهر الحالي' : 'شهر قديم', 'month', m, v => { UI.month = v; render(); }, () => shiftM(-1), () => shiftM(1)));
+    }
+    const rng = reportRange();
+    $('subtitle').textContent = 'تقرير ' + rng.label;
+    if (rng.future) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'الفترة دي لسه مجتش'))); return; }
     const all = computeRange(rng.from, rng.to);
-    if (!all.length) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'مفيش بيانات للشهر ده'), 'مفيش موظفين كانوا شغالين الشهر ده.')); return; }
+    if (!all.length) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'مفيش بيانات للفترة دي'), 'مفيش موظفين كانوا شغالين فيها.')); return; }
 
-    const pend = pendingIn(m);
+    const pend = []; for (const e of all) for (const r of e.rows) if (r.code === 'pending' || r.code === 'missing') pend.push(r.date);
+    pend.sort();
     if (pend.length) kids.push(h('div', { class: 'banner' }, h('span', null, `${pend.length} تسجيل ناقص — التقرير مش هيبقى كامل`), h('button', { class: 'btn sm', onclick: () => goDay(pend[0]) }, 'كمّل التسجيل')));
-    else kids.push(h('div', { class: 'banner ok' }, h('span', null, rng.to < rng.end ? `كل الأيام لحد ${fmtDate(rng.to)} متسجلة` : 'الشهر متسجّل كامل ✓')));
+    else kids.push(h('div', { class: 'banner ok' }, h('span', null, rng.to < rng.end ? `كل الأيام لحد ${fmtDate(rng.to)} متسجلة` : 'الفترة متسجّلة كاملة ✓')));
 
-    const tot = f => all.reduce((a, e) => a + (e.summary[f] || 0), 0);
+    const v = S.view;
+    if (v.emp && !all.some(e => e.id === v.emp)) v.emp = '';
+    const list = v.emp ? all.filter(e => e.id === v.emp) : all;
+    const tot = f => list.reduce((a, e) => a + (e.summary[f] || 0), 0);
     kids.push(h('div', { class: 'totals' },
       h('div', { class: 'total' }, h('b', null, D(tot('worked')).split(':')[0]), h('span', null, 'ساعة شغل')),
       h('div', { class: 'total' }, h('b', { style: 'color:var(--rose)' }, tot('absent')), h('span', null, 'يوم غياب')),
       h('div', { class: 'total' }, h('b', { style: 'color:var(--rose)' }, D(tot('late'))), h('span', null, 'تأخير')),
       h('div', { class: 'total' }, h('b', { style: 'color:var(--green)' }, D(tot('overtime'))), h('span', null, 'زيادة'))));
 
-    const v = S.view;
-    if (v.emp && !all.some(e => e.id === v.emp)) v.emp = '';
     const empSel = h('select', { 'aria-label': 'الموظف', onchange: ev => { v.emp = ev.target.value; save(); render(); } },
       h('option', { value: '' }, 'كل الموظفين'), ...all.map(e => h('option', { value: e.id }, e.name)));
     empSel.value = v.emp;
     const typeBtn = (t, l) => h('button', { class: v.type === t ? 'on' : '', onclick: () => { v.type = t; save(); render(); } }, l);
-    kids.push(h('div', { class: 'ctrls' }, h('div', { class: 'seg two' }, typeBtn('summary', 'شامل'), typeBtn('detail', 'مفصّل')), empSel));
+    kids.push(h('div', { class: 'ctrls' }, h('div', { class: 'seg three' }, typeBtn('summary', 'شامل'), typeBtn('detail', 'مفصّل'), typeBtn('charts', 'رسوم')), empSel));
 
-    const list = v.emp ? all.filter(e => e.id === v.emp) : all;
-    if (v.type === 'summary') for (const e of list) kids.push(monthRow(e));
-    else for (const e of list) kids.push(...detailTable(e));
-    kids.push(h('button', { class: 'btn primary block', style: 'margin-top:6px', onclick: () => exportExcel(list, rng) }, h('span', { html: ICON.xls, style: 'display:inline-flex' }), `تحميل Excel — ${v.type === 'summary' ? 'شامل' : 'مفصّل'}${v.emp ? ' — ' + list[0].name : ''}`));
+    if (v.type === 'charts') kids.push(...(v.emp ? empCharts(list[0], rng) : teamCharts(list, rng)));
+    else {
+      if (v.type === 'summary') for (const e of list) kids.push(monthRow(e));
+      else for (const e of list) kids.push(...detailTable(e));
+      kids.push(h('button', { class: 'btn primary block', style: 'margin-top:6px', onclick: () => exportExcel(list, rng) }, h('span', { html: ICON.xls, style: 'display:inline-flex' }), `تحميل Excel — ${v.type === 'summary' ? 'شامل' : 'مفصّل'}${v.emp ? ' — ' + list[0].name : ''}`));
+    }
     root.replaceChildren(...kids);
+  }
+
+  /* ======================= الرسوم البيانية ======================= */
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  function sv(tag, attrs) { const el = document.createElementNS(SVGNS, tag); for (const k in attrs) el.setAttribute(k, attrs[k]); return el; }
+  const niceMax = v => { if (v <= 0) return 1; const p = Math.pow(10, Math.floor(Math.log10(v))), n = v / p; return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p; };
+  function legend(series) { return h('div', { class: 'legend' }, series.map(s => h('span', null, h('i', { style: `background:${s.color}` }), s.name))); }
+  function chartCard(title, sub, ...body) { return h('div', { class: 'card chart' }, h('h2', null, title), sub ? h('p', { class: 'muted', style: 'margin:-6px 0 10px' }, sub) : null, ...body); }
+
+  /** أعمدة أفقية: موظف لكل صف، القيمة على طرف العمود */
+  function hBars(title, sub, items, color, fmt) {
+    const max = Math.max(...items.map(i => i.value), 0) || 1;
+    const sorted = [...items].sort((a, b) => b.value - a.value);
+    return chartCard(title, sub, h('div', { class: 'hbars' }, sorted.map(i => h('div', { class: 'hb', title: `${i.label}: ${fmt(i.value)}` },
+      h('span', { class: 'hb-l', dir: 'auto' }, i.label),
+      h('span', { class: 'hb-t' }, i.value > 0 ? h('span', { class: 'hb-b', style: `width:${Math.max(2, i.value / max * 100)}%;background:${color}` }) : null),
+      h('span', { class: 'hb-v' }, fmt(i.value))))));
+  }
+
+  /** أعمدة يوم بيوم (مكدّسة لو أكتر من سلسلة)، اليوم الأول على اليمين */
+  const niceMinutes = v => v <= 15 ? 15 : v <= 30 ? 30 : v <= 60 ? 60 : niceMax(v / 60) * 60;
+  function dayColumns(title, sub, days, series, fmt, tip, ref, minutes) {
+    const W = 340, H = 170, T = 10, B = 22, R = 30, L = 4, pw = W - R - L, ph = H - T - B, n = days.length;
+    const totals = days.map(d => d.vals.reduce((a, b) => a + b, 0));
+    const top = Math.max(...totals, ref ? ref.value : 0), max = minutes ? niceMinutes(top) : niceMax(top);
+    const y = v => T + ph - v / max * ph, slot = pw / n, bw = Math.max(2, Math.min(16, slot * 0.68));
+    const svg = sv('svg', { viewBox: `0 0 ${W} ${H}`, class: 'cols', role: 'img', 'aria-label': title, direction: 'ltr' });
+    for (const t of [0, max / 2, max]) {
+      svg.append(sv('line', { x1: L, x2: W - R, y1: y(t), y2: y(t), class: 'grid' }));
+      const tx = sv('text', { x: W - R + 4, y: y(t) + 3.5, class: 'tick', 'text-anchor': 'start' }); tx.textContent = fmt(t); svg.append(tx);
+    }
+    const cap = h('div', { class: 'cap' }, 'اضغط على أي يوم يظهرلك تفاصيله');
+    const hl = sv('rect', { y: T, height: ph, width: slot, class: 'hl', opacity: 0 }); svg.append(hl);
+    const every = Math.max(1, Math.ceil(n / 8));
+    days.forEach((d, i) => {
+      const cx = W - R - (i + 0.5) * slot, x = cx - bw / 2;
+      let acc = 0; const segs = d.vals.map((v, si) => ({ v, si })).filter(o => o.v > 0);
+      segs.forEach((o, j) => {
+        const y0 = y(acc), y1 = y(acc + o.v), gap = j > 0 ? 2 : 0, hgt = Math.max(0, y0 - y1 - gap); acc += o.v;
+        if (hgt <= 0) return;
+        const top = j === segs.length - 1, r = Math.min(3, hgt, bw / 2), yt = y0 - gap - hgt;
+        const dpath = top ? `M${x},${y0 - gap} V${yt + r} Q${x},${yt} ${x + r},${yt} H${x + bw - r} Q${x + bw},${yt} ${x + bw},${yt + r} V${y0 - gap} Z` : `M${x},${y0 - gap} V${yt} H${x + bw} V${y0 - gap} Z`;
+        svg.append(sv('path', { d: dpath, style: `fill:${series[o.si].color}` }));
+      });
+      if (i % every === 0 || (i === n - 1 && (n - 1) % every >= every * 0.6)) { const tx = sv('text', { x: cx, y: H - 6, class: 'tick', 'text-anchor': 'middle' }); tx.textContent = d.label; svg.append(tx); }
+      const hit = sv('rect', { x: cx - slot / 2, y: T, width: slot, height: ph + B, fill: 'transparent', style: 'cursor:pointer' });
+      const show = () => { cap.textContent = tip(d) || `${dayTip(d.key)}: مفيش بيانات`; hl.setAttribute('x', cx - slot / 2); hl.setAttribute('opacity', 1); };
+      hit.addEventListener('pointerenter', show); hit.addEventListener('click', show);
+      svg.append(hit);
+    });
+    if (ref && ref.value > 0) {
+      svg.append(sv('line', { x1: L, x2: W - R, y1: y(ref.value), y2: y(ref.value), class: 'ref' }));
+    }
+    return chartCard(title, sub, series.length > 1 ? legend(series) : null, svg, cap);
+  }
+  function rangeDays(rng) { const out = []; for (let k = rng.from; k <= rng.to; k = addDays(k, 1)) out.push(k); return out; }
+  const dayLbl = k => String(+k.slice(8));
+  const dayTip = k => `${E.DAY_NAMES[E.weekday(k)]} ${fmtDate(k)}`;
+  const hrs = m => D(Math.round(m));
+  const STATUS_SERIES = [
+    { name: 'حاضر', color: 'var(--c1)', codes: ['present', 'offwork'] },
+    { name: 'بإذن/إجازة', color: 'var(--c2)', codes: ['excused', 'leave', 'off'] },
+    { name: 'غياب', color: 'var(--c3)', codes: ['absent'] },
+    { name: 'مستني تسجيل', color: 'var(--c4)', codes: ['pending', 'missing'] }];
+
+  function teamCharts(list, rng) {
+    const ks = rangeDays(rng);
+    const byDay = ks.map(k => {
+      const rows = list.map(e => e.rows.find(r => r.date === k)).filter(Boolean);
+      return { key: k, label: dayLbl(k), vals: STATUS_SERIES.map(s => rows.filter(r => s.codes.includes(r.code)).length) };
+    });
+    const out = [dayColumns('الحضور يوم بيوم', 'عدد الموظفين في كل حالة', byDay, STATUS_SERIES, v => Number.isInteger(v) ? String(v) : '',
+      d => d.vals.some(Boolean) ? `${dayTip(d.key)}: ` + STATUS_SERIES.map((s, i) => d.vals[i] ? `${s.name} ${d.vals[i]}` : null).filter(Boolean).join(' · ') : `${dayTip(d.key)}: مفيش موظفين شغالين`)];
+    const it = f => list.map(e => ({ label: e.name, value: e.summary[f] || 0 }));
+    out.push(hBars('ساعات الشغل', 'إجمالي الساعات لكل موظف في الفترة', it('worked'), 'var(--c1)', hrs));
+    out.push(hBars('التأخير', 'بعد فترة السماح ومن غير التأخير بإذن', it('late'), 'var(--c3)', hrs));
+    out.push(hBars('الانصراف بدري', 'من غير الانصراف بإذن', it('early'), 'var(--c3)', hrs));
+    out.push(hBars('الزيادة', 'الوقت بعد نهاية اليوم المطلوب', it('overtime'), 'var(--c1)', hrs));
+    out.push(hBars('أيام الغياب', null, it('absent'), 'var(--c3)', v => String(v)));
+    return out;
+  }
+  function empCharts(e, rng) {
+    const ks = rangeDays(rng), rowOf = k => e.rows.find(r => r.date === k);
+    const reqs = e.rows.map(r => r.required).filter(Boolean).sort((a, b) => a - b), req = reqs.length ? reqs[Math.floor(reqs.length / 2)] : 0;
+    const mk = (f, div = 1) => ks.map(k => { const r = rowOf(k); return { key: k, label: dayLbl(k), r, vals: [r && r[f] ? r[f] / div : 0] }; });
+    const tipRow = d => `${dayTip(d.key)}: ` + (d.r ? (d.r.worked != null ? `${C(d.r.in)}–${C(d.r.out)} · ${D(d.r.worked)} ساعة${d.r.late ? ' · تأخير ' + D(d.r.late) : ''}${d.r.overtime ? ' · زيادة ' + D(d.r.overtime) : ''}` : d.r.status) : 'مكنش شغال');
+    const out = [dayColumns('ساعات الشغل يوم بيوم', req ? `${e.name} · الخط الرمادي = المطلوب ${D(req)}` : e.name, mk('worked', 60), [{ name: 'ساعات', color: 'var(--c1)' }], v => String(+v.toFixed(1)), tipRow, req ? { value: req / 60, label: `المطلوب ${D(req)}` } : null)];
+    const s = e.summary, parts = STATUS_SERIES.map(x => ({ ...x, n: e.rows.filter(r => x.codes.includes(r.code)).length })).filter(x => x.n);
+    const totalDays = parts.reduce((a, b) => a + b.n, 0) || 1;
+    out.push(chartCard('توزيع الأيام', `${e.rows.length} يوم في الفترة`, legend(parts.map(p => ({ name: `${p.name} ${p.n}`, color: p.color }))),
+      h('div', { class: 'stackbar' }, parts.map(p => h('span', { style: `flex:${p.n / totalDays};background:${p.color}`, title: `${p.name}: ${p.n}` })))));
+    if (s.late) out.push(dayColumns('التأخير يوم بيوم', `إجمالي ${D(s.late)}`, mk('late'), [{ name: 'تأخير', color: 'var(--c3)' }], D, tipRow, null, true));
+    if (s.overtime) out.push(dayColumns('الزيادة يوم بيوم', `إجمالي ${D(s.overtime)}`, mk('overtime'), [{ name: 'زيادة', color: 'var(--c1)' }], D, tipRow, null, true));
+    return out;
   }
   function monthRow(e) {
     const s = e.summary, c = (label, val, color) => val ? h('span', { class: 'chip' }, h('span', { class: 'dot', style: `background:${color}` }), label, h('b', null, val)) : null;
     return h('button', { class: 'mrow', onclick: () => { S.view.emp = e.id; S.view.type = 'detail'; save(); render(); window.scrollTo(0, 0); } },
       h('div', { class: 'mrow-top' }, h('div', null, h('div', { class: 'emp-name', dir: 'auto' }, e.name), h('div', { class: 'emp-meta' }, `كود ${e.id}${e.offDay ? ' · إجازته ' + e.offDay : ''}`)),
-        h('div', { class: 'hrs' }, D(s.worked), h('small', null, ' ساعة'))),
+        h('div', { class: 'hrs' }, D(s.worked), h('small', null, s.required ? ` من ${D(s.required)}` : ' ساعة'))),
       h('div', { class: 'chips' },
         c('حضور', s.present + s.offwork, 'var(--green)'), c('غياب', s.absent, 'var(--rose)'), c('غياب بإذن', s.excused, 'var(--violet)'), c('إجازة', s.leave, 'var(--violet)'),
         c('تأخير', s.late ? D(s.late) : 0, 'var(--rose)'), c('بدري', s.early ? D(s.early) : 0, 'var(--rose)'), c('زيادة', s.overtime ? D(s.overtime) : 0, 'var(--green)'),
@@ -315,13 +437,13 @@
   function exportExcel(list, rng) {
     const dur = min => ({ t: 'n', v: (min || 0) / 1440, z: '[h]:mm' }), txt = v => ({ t: 's', v: v == null ? '' : String(v) }), num = v => ({ t: 'n', v: v || 0 });
     const isSum = S.view.type === 'summary', single = !!S.view.emp;
-    const title = `${isSum ? 'تقرير شامل' : 'تقرير مفصّل'} — ${single ? list[0].name : 'كل الموظفين'} — ${monthLabel(UI.month)} (من ${fmtDate(rng.from)} إلى ${fmtDate(rng.to)})`;
+    const title = `${isSum ? 'تقرير شامل' : 'تقرير مفصّل'} — ${single ? list[0].name : 'كل الموظفين'} — ${UI.rmode === 'range' ? `من ${fmtDate(rng.from)} إلى ${fmtDate(rng.to)}` : `${rng.label} (من ${fmtDate(rng.from)} إلى ${fmtDate(rng.to)})`}`;
     const aoa = [[txt(title)], []]; let widths;
     if (isSum) {
-      const head = ['الكود', 'الاسم', 'يوم الإجازة', 'أيام الحضور', 'أيام الغياب', 'غياب بإذن', 'إجازة', 'إجازة أسبوعية', 'شغل يوم إجازة', 'مستني تسجيل', 'ساعات العمل', 'التأخير', 'أيام التأخير', 'تأخير بإذن', 'انصراف بدري', 'أيام الانصراف بدري', 'انصراف بدري بإذن', 'الزيادة'];
+      const head = ['الكود', 'الاسم', 'يوم الإجازة', 'الساعات المطلوبة', 'أيام الحضور', 'أيام الغياب', 'غياب بإذن', 'إجازة', 'إجازة أسبوعية', 'شغل يوم إجازة', 'مستني تسجيل', 'ساعات العمل', 'التأخير', 'أيام التأخير', 'تأخير بإذن', 'انصراف بدري', 'أيام الانصراف بدري', 'انصراف بدري بإذن', 'الزيادة'];
       aoa.push(head.map(txt));
-      for (const e of list) { const s = e.summary; aoa.push([txt(e.id), txt(e.name), txt(e.offDay), num(s.present + s.offwork), num(s.absent), num(s.excused), num(s.leave), num(s.off), num(s.offwork), num(s.pending + s.missing), dur(s.worked), dur(s.late), num(s.lateDays), dur(s.lateExcused), dur(s.early), num(s.earlyDays), dur(s.earlyExcused), dur(s.overtime)]); }
-      widths = [8, 24, 11, 11, 11, 10, 8, 13, 13, 12, 12, 10, 11, 11, 12, 16, 16, 10];
+      for (const e of list) { const s = e.summary; aoa.push([txt(e.id), txt(e.name), txt(e.offDay), dur(s.required), num(s.present + s.offwork), num(s.absent), num(s.excused), num(s.leave), num(s.off), num(s.offwork), num(s.pending + s.missing), dur(s.worked), dur(s.late), num(s.lateDays), dur(s.lateExcused), dur(s.early), num(s.earlyDays), dur(s.earlyExcused), dur(s.overtime)]); }
+      widths = [8, 24, 11, 14, 11, 11, 10, 8, 13, 13, 12, 12, 10, 11, 11, 12, 16, 16, 10];
     } else {
       aoa.push(['الكود', 'الاسم', 'التاريخ', 'اليوم', 'الشيفت', 'الحضور', 'الانصراف', 'ساعات العمل', 'التأخير', 'تأخير بإذن', 'انصراف بدري', 'انصراف بإذن', 'الزيادة', 'الحالة'].map(txt));
       for (const e of list) {
@@ -341,7 +463,7 @@
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, isSum ? 'شامل' : 'مفصل');
     wb.Workbook = { Views: [{ RTL: true }] };
-    const fname = `attendance_${UI.month}_${isSum ? 'summary' : 'detailed'}${single ? '_emp' + list[0].id : '_all'}.xlsx`;
+    const fname = `attendance_${rng.tag}_${isSum ? 'summary' : 'detailed'}${single ? '_emp' + list[0].id : '_all'}.xlsx`;
     saveFile(fname, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', XLSX.write(wb, { type: 'base64', bookType: 'xlsx' }))
       .catch(err => toast('مقدرتش أحفظ الملف: ' + (err.message || err)));
   }
@@ -358,7 +480,7 @@
       return h('button', { class: 'li' + (gone.includes(id) ? ' gone' : ''), onclick: () => empSheet(id) },
         h('span', { class: 'avatar' }, name.trim().charAt(0) || '؟'),
         h('span', { class: 'grow' }, h('div', { class: 't', dir: 'auto' }, name),
-          h('div', { class: 's' }, [`كود ${id}`, off, sh ? 'شيفت ' + sh.name : 'شيفت تلقائي', e.end ? `ساب ${fmtDate(e.end)}` : null].filter(Boolean).join(' · '))),
+          h('div', { class: 's' }, [`كود ${id}`, off, sh ? 'شيفت ' + sh.name : 'شيفت تلقائي', E.hoursOf(e) ? `${+e.hours} ساعات` : null, e.end ? `ساب ${fmtDate(e.end)}` : null].filter(Boolean).join(' · '))),
         h('span', { html: ICON.chev, style: 'display:inline-flex' }));
     };
     const kids = [h('button', { class: 'btn primary block', style: 'margin-bottom:12px', onclick: () => empSheet(null) }, h('span', { html: ICON.plus, style: 'display:inline-flex' }), 'موظف جديد')];
@@ -368,12 +490,13 @@
     $('tab-emps').replaceChildren(...kids);
   }
   function empSheet(id) {
-    const isNew = id == null, e = isNew ? { name: '', off: '', shift: '', start: todayKey(), end: '' } : Object.assign({}, S.employees[id]);
+    const isNew = id == null, e = isNew ? { name: '', off: '', shift: '', hours: '', start: todayKey(), end: '' } : Object.assign({}, S.employees[id]);
     const f = (label, el) => h('div', { class: 'field' }, h('label', { class: 'f' }, label), el);
     const idIn = h('input', { inputmode: 'numeric', value: isNew ? '' : id, disabled: !isNew, placeholder: 'نفس الكود المتسجّل في جهاز البصمة' });
     const nameIn = h('input', { dir: 'auto', value: e.name || (isNew ? '' : S.names[id] || '') });
     const offIn = h('select', null, h('option', { value: '' }, '— مش متحدد —'), E.DAY_NAMES.map((n, i) => h('option', { value: String(i) }, n))); offIn.value = e.off == null ? '' : String(e.off);
     const shIn = h('select', null, h('option', { value: '' }, 'تلقائي (حسب البصمة)'), S.settings.shifts.map(s => h('option', { value: s.id }, `${s.name} ${s.start}–${s.end}`))); shIn.value = e.shift || '';
+    const hrIn = h('input', { type: 'number', min: 1, max: 23, step: 0.5, inputmode: 'decimal', value: e.hours || '', placeholder: 'حسب الشيفت (8)' });
     const stIn = h('input', { type: 'date', value: e.start || '' }), enIn = h('input', { type: 'date', value: e.end || '' });
     const msg = h('div');
     const saveBtn = h('button', { class: 'btn primary', style: 'flex:1', onclick: () => {
@@ -381,12 +504,13 @@
       if (!nid) { idIn.focus(); return; }
       if (isNew && S.employees[nid]) { msg.replaceChildren(h('div', { class: 'warn-line' }, `الكود ${nid} متسجّل قبل كده باسم ${empName(nid)}`)); return; }
       if (isNew) delete S.removed[nid];
-      S.employees[nid] = Object.assign(S.employees[nid] || {}, { name: nameIn.value.trim(), off: offIn.value, shift: shIn.value, start: stIn.value, end: enIn.value });
+      S.employees[nid] = Object.assign(S.employees[nid] || {}, { name: nameIn.value.trim(), off: offIn.value, shift: shIn.value, hours: hrIn.value && +hrIn.value > 0 ? String(+hrIn.value) : '', start: stIn.value, end: enIn.value });
       save(); $('sheet').close(); toast(isNew ? `اتضاف ${empName(nid)}` : 'اتحفظ'); render();
     } }, isNew ? 'إضافة' : 'حفظ');
     const kids = [h('h2', null, isNew ? 'موظف جديد' : empName(id)),
       h('div', { class: 'grid2' }, f('الكود في الجهاز', idIn), f('الاسم', nameIn)),
       h('div', { class: 'grid2' }, f('يوم الإجازة الأسبوعية', offIn), f('الشيفت', shIn)),
+      h('div', { class: 'grid2' }, f('ساعات العمل في اليوم', hrIn), h('div', { class: 'muted', style: 'align-self:center;font-size:12.5px' }, 'الانصراف المطلوب = بداية الشيفت + الساعات دي. سيبها فاضية تبقى حسب الشيفت.')),
       h('div', { class: 'grid2' }, f('بدأ الشغل يوم', stIn), f('ساب الشغل يوم (لو مشي)', enIn)),
       h('p', { class: 'muted', style: 'margin:0 0 12px' }, 'الشيفت "تلقائي" يعني التطبيق بيعرفه من وقت البصمة كل يوم. لو موظف مشي اكتب يوم ما ساب — بيفضل في تقارير الشهور القديمة.'),
       msg, h('div', { class: 'btns' }, saveBtn, h('button', { class: 'btn', onclick: () => $('sheet').close() }, 'إلغاء'))];
