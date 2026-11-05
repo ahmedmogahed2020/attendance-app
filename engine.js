@@ -10,6 +10,7 @@
   const DEFAULT_SETTINGS = {
     grace: 15,           // دقائق السماح في التأخير
     dayCutHour: 5,       // البصمة قبل الساعة 5 الفجر تتبع اليوم السابق
+    deviceFrom: '2026-11-06', // بصمات الجهاز قبل اليوم ده (فترة التجربة) بتتجاهل
     dedupeMinutes: 10,   // بصمتين ورا بعض في أقل من 10 دقايق = بصمة واحدة
     ambiguousMinutes: 120,
     shifts: [
@@ -207,7 +208,9 @@
     for (const p of punches) {
       const abs = dayNum(p.key) * 1440 + p.min;
       const dn = Math.floor((abs - cut) / 1440);
-      const k = p.id + '|' + keyFromNum(dn);
+      const dk = keyFromNum(dn);
+      if (settings.deviceFrom && dk < settings.deviceFrom) continue;
+      const k = p.id + '|' + dk;
       (map[k] = map[k] || []).push({ t: abs - dn * 1440, type: p.type || null });
     }
     for (const k in map) {
@@ -217,6 +220,9 @@
     }
     return map;
   }
+
+  function tinDev(P) { if (!P.length) return null; if (P.some(p => p.type)) { const a = P.filter(p => p.type === 'in'); return a.length ? a[0].t : null; } return P[0].t; }
+  function toutDev(P) { if (!P.length) return null; if (P.some(p => p.type)) { const a = P.filter(p => p.type === 'out'); return a.length ? a[a.length - 1].t : null; } return P.length > 1 ? P[P.length - 1].t : null; }
 
   function nearestShift(t, shifts, field) {
     let best = null, bd = Infinity, second = Infinity;
@@ -254,8 +260,11 @@
       for (let n = from; n <= to; n++) {
         const key = keyFromNum(n), k = id + '|' + key;
         if ((emp.start && key < emp.start) || (emp.end && key > emp.end)) continue; // قبل ما يبدأ أو بعد ما ساب الشغل
-        const P = groups[k] || [], man = manual[k] || {};
+        const man = manual[k] || {};
+        let P = groups[k] || [];
+        const devP = P;
         let tin = null, tout = null;
+        if (man.absence) P = [];
         if (P.some(p => p.type)) {
           // الجهاز بيحدد نوع البصمة: أول بصمة حضور وآخر بصمة انصراف
           const ins = P.filter(p => p.type === 'in').map(p => p.t), outs = P.filter(p => p.type === 'out').map(p => p.t);
@@ -273,12 +282,14 @@
         const mIn = hm(man.in), mOut = hm(man.out);
         if (mIn != null) tin = mIn;
         if (mOut != null) { tout = mOut; if (tin != null && tout < tin) tout += 1440; }
-        let shift = man.shift && byId[man.shift] ? byId[man.shift] : null, ambiguous = false;
+        const devIn = tinDev(devP), devOut = toutDev(devP);
+        const fixed = emp.shift && byId[emp.shift] ? byId[emp.shift] : null;
+        let shift = man.shift && byId[man.shift] ? byId[man.shift] : fixed, ambiguous = false;
         if (!shift && shifts.length) {
           if (tin != null) { const r = nearestShift(tin, shifts, 'st'); shift = r.shift; ambiguous = r.gap < settings.ambiguousMinutes; }
           else if (tout != null) { const r = nearestShift(tout, shifts, 'en'); shift = r.shift; ambiguous = r.gap < settings.ambiguousMinutes; }
         }
-        days.push({ key, k, P, tin, tout, shift, ambiguous, absence: man.absence || '', manualShift: !!(man.shift && byId[man.shift]), manual: mIn != null || mOut != null });
+        days.push({ key, k, P: devP, devIn, devOut, tin, tout, shift, ambiguous, absence: man.absence || '', manualShift: !!(man.shift && byId[man.shift]) || !!fixed, manual: mIn != null || mOut != null || !!man.absence });
       }
       // المرحلة 2: الحالات المحيّرة تاخد الشيفت الغالب للموظف
       const cnt = {};
@@ -293,13 +304,14 @@
         const row = {
           id, date: d.key, weekday: wd, dayName: DAY_NAMES[wd],
           shift: d.shift ? d.shift.name : '', shiftId: d.shift ? d.shift.id : '',
-          in: d.tin, out: d.tout, punches: d.P.length, manual: d.manual,
+          in: d.tin, out: d.tout, devIn: d.devIn, devOut: d.devOut, punches: d.P.length, manual: d.manual,
           worked: null, late: null, lateExcused: 0, early: null, earlyExcused: 0, overtime: null,
           status: '', code: '', permLate: !!perm.late, permEarly: !!perm.early
         };
         if (d.tin == null && d.tout == null) {
           row.shift = ''; row.shiftId = '';
-          if (isOff && !d.absence) { row.code = 'off'; row.status = 'إجازة أسبوعية'; }
+          if (d.absence === 'leave') { row.code = 'leave'; row.status = 'إجازة'; }
+          else if (isOff && !d.absence) { row.code = 'off'; row.status = 'إجازة أسبوعية'; }
           else if (d.absence === 'excused') { row.code = 'excused'; row.status = 'غياب بإذن'; }
           else if (d.absence === 'absent') { row.code = 'absent'; row.status = 'غياب'; }
           else { row.code = 'pending'; row.status = 'مستني تسجيلك'; }
@@ -336,7 +348,7 @@
         offDay: off == null ? '' : DAY_NAMES[off],
         rows,
         summary: {
-          present: count('present'), absent: count('absent'), excused: count('excused'), pending: count('pending'), off: count('off'), offwork: count('offwork'), missing: count('missing'),
+          present: count('present'), absent: count('absent'), excused: count('excused'), leave: count('leave'), pending: count('pending'), off: count('off'), offwork: count('offwork'), missing: count('missing'),
           worked: sum('worked'), late: sum('late'), lateDays: rows.filter(r => r.late > 0).length,
           lateExcused: sum('lateExcused'), early: sum('early'), earlyDays: rows.filter(r => r.early > 0).length,
           earlyExcused: sum('earlyExcused'), overtime: sum('overtime')

@@ -4,7 +4,7 @@
   "private": true,
   "description": "الحضور والانصراف — تطبيق أندرويد (Capacitor) + نسخة ويب",
   "scripts": {
-    "www": "rm -rf www && mkdir -p www && cp -r index.html app.js engine.js manifest.json sw.js icons vendor www/",
+    "www": "rm -rf www && mkdir -p www && cp -r index.html app.js engine.js manifest.json sw.js icons vendor fonts www/",
     "sync": "npm run www && npx cap sync android"
   },
   "dependencies": {
