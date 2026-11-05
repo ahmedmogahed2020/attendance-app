@@ -1,4 +1,4 @@
-const CACHE = 'attendance-v5';
+const CACHE = 'attendance-v6';
 const FILES = ['./', 'index.html', 'app.js', 'engine.js', 'vendor/xlsx.full.min.js', 'manifest.json', 'icons/icon-192.png', 'icons/icon-512.png', 'fonts/ibm-plex-sans-arabic-arabic-400-normal.woff2', 'fonts/ibm-plex-sans-arabic-arabic-500-normal.woff2', 'fonts/ibm-plex-sans-arabic-arabic-600-normal.woff2', 'fonts/ibm-plex-sans-arabic-latin-400-normal.woff2', 'fonts/ibm-plex-sans-arabic-latin-600-normal.woff2', 'fonts/reem-kufi-arabic-500-normal.woff2', 'fonts/reem-kufi-arabic-700-normal.woff2'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES))); self.skipWaiting(); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k))))); self.clients.claim(); });

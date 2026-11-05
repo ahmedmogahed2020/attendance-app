@@ -668,6 +668,12 @@
   }
 
   /* ======================= البداية ======================= */
+  // شاشة التحميل: بتفضل لحد ما الأنيميشن يخلص (حوالي ثانية ونص) وبعدين تختفي
+  (function hideSplash() {
+    const sp = $('splash'); if (!sp) return;
+    const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    setTimeout(() => { sp.classList.add('out'); setTimeout(() => sp.remove(), 400); }, reduce ? 500 : 1500);
+  })();
   normalize(); save();
   if (isNative()) $('file').removeAttribute('accept'); // عشان ملفات .dat تبان في اختيار الملفات
   render();

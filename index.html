@@ -223,9 +223,33 @@ dialog h2{margin:0 0 12px;font-size:18px;font-family:var(--f-display);font-weigh
 @media (max-width:380px){.seg button{font-size:12.5px}.totals{grid-template-columns:repeat(2,1fr)}}
 .set-row input,.set-row select{max-width:46%}
 html,body{overflow-x:hidden}
+
+/* شاشة التحميل */
+#splash{position:fixed;inset:0;z-index:100;background:#0F766E;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;transition:opacity .35s ease}
+#splash.out{opacity:0;pointer-events:none}
+.sp-fp{width:150px;height:150px;overflow:visible}
+.sp-lines path{fill:none;stroke:#fff;stroke-width:4.6;stroke-linecap:round;stroke-dasharray:1;stroke-dashoffset:1;animation:sp-draw .55s cubic-bezier(.4,0,.2,1) var(--d) forwards}
+.sp-scan{fill:#7FE0D2;opacity:0;animation:sp-scan .75s ease-in-out .25s forwards}
+.sp-clock{transform-box:fill-box;transform-origin:center;transform:scale(0);animation:sp-pop .35s cubic-bezier(.3,1.5,.6,1) .85s forwards}
+.sp-name{font-family:var(--f-display);font-weight:700;font-size:26px;color:#fff;word-spacing:.25em;opacity:0;transform:translateY(6px);animation:sp-in .4s ease .9s forwards}
+@keyframes sp-draw{to{stroke-dashoffset:0}}
+@keyframes sp-scan{0%{opacity:0;transform:translateY(0)}15%{opacity:1}85%{opacity:1}100%{opacity:0;transform:translateY(64px)}}
+@keyframes sp-pop{to{transform:scale(1)}}
+@keyframes sp-in{to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.sp-lines path,.sp-clock,.sp-name{animation:none;stroke-dashoffset:0;transform:none;opacity:1}.sp-scan{display:none}}
 </style>
 </head>
 <body>
+<div id="splash" aria-hidden="true">
+  <svg class="sp-fp" viewBox="0 0 100 100">
+    <g transform="translate(50 50) scale(.9) translate(-55 -53.5)">
+      <g class="sp-lines"><path pathLength="1" style="--d:0.00s" d="M33 20.5 C38.5 17.6 44 16.2 50 16.2 C58 16.2 65 18.6 70.6 22.6"/><path pathLength="1" style="--d:0.10s" d="M29 69 C25.5 62.5 24 56 24 50 C24 35.6 35.6 24 50 24 C64.4 24 76 35.6 76 50 C76 53.5 75.6 56.6 75 59.5"/><path pathLength="1" style="--d:0.20s" d="M24.5 38.5 C21.5 43.5 20 47 19.6 51"/><path pathLength="1" style="--d:0.30s" d="M37 75 C33.5 68.5 31.5 60.5 31.5 52 C31.5 41.8 39.8 33.5 50 33.5 C60.2 33.5 68.5 41.8 68.5 52 C68.5 55 68.2 57.8 67.8 60.3"/><path pathLength="1" style="--d:0.40s" d="M45 78.5 C41.8 71.5 39.8 63 39.8 53.5 C39.8 47.3 44.5 42.5 50 42.5 C55.5 42.5 60.2 47.3 60.2 53.5 C60.2 62.5 59 70.5 56.8 77"/><path pathLength="1" style="--d:0.50s" d="M50 52.5 C50 61.5 51.6 69.5 54.4 76.5"/></g>
+      <rect class="sp-scan" x="12" y="14" width="76" height="3" rx="1.5"/>
+      <g class="sp-clock"><circle cx="73" cy="74" r="17" fill="#0F766E"/><circle cx="73" cy="74" r="13.5" fill="#F4C53A"/><path d="M73 66.6V74l5.7 3.8" fill="none" stroke="#1B2730" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round"/></g>
+    </g>
+  </svg>
+  <div class="sp-name">الحضور والانصراف</div>
+</div>
 <header class="top">
   <div class="top-row">
     <div><h1>الحضور والانصراف</h1><div class="sub" id="subtitle"></div></div>
