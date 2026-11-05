@@ -108,8 +108,20 @@
     time: ['time', 'الوقت', 'وقت'],
     datetime: ['datetime', 'checktime', 'punchtime', 'clocktime', 'timestamp', 'attendancetime', 'verifytime', 'recordtime', 'التاريخوالوقت', 'وقتالبصمة', 'time'],
     clockin: ['clockin', 'checkin', 'in', 'حضور', 'الحضور', 'وقتالحضور'],
-    clockout: ['clockout', 'checkout', 'out', 'انصراف', 'الانصراف', 'وقتالانصراف']
+    clockout: ['clockout', 'checkout', 'out', 'انصراف', 'الانصراف', 'وقتالانصراف'],
+    state: ['state', 'status', 'checktype', 'inout', 'punchstate', 'attstate', 'attendancestate', 'punchtype', 'checkstate', 'الحالة', 'نوعالبصمة', 'حالةالبصمة', 'نوعالحركة']
   };
+  /** نوع البصمة: حضور / انصراف (من زرار الحالة في الجهاز) */
+  function stateOf(v) {
+    if (v == null || v === '') return null;
+    const s = String(v).trim().toLowerCase().replace(/[\s_\-\/.]/g, '');
+    if (/break|استراحة/.test(s)) return null;
+    if (['0', '4', 'i', 'in', 'cin', 'checkin', 'clockin', 'otin', 'دخول', 'حضور'].includes(s)) return 'in';
+    if (['1', '5', 'o', 'out', 'cout', 'checkout', 'clockout', 'otout', 'خروج', 'انصراف'].includes(s)) return 'out';
+    if (/out|انصراف|خروج/.test(s)) return 'out';
+    if (/in|حضور|دخول/.test(s)) return 'in';
+    return null;
+  }
   function findCol(headers, names) {
     for (const n of names) { const i = headers.indexOf(n); if (i >= 0) return i; }
     return -1;
@@ -119,10 +131,13 @@
     const lines = text.split(/\r?\n/).filter(l => l.trim());
     const punches = []; let ok = 0;
     for (const l of lines) {
-      const m = l.match(/^\s*([^\s,;]+)[\s,;]+(?:"?([^\t,;"]*?)"?[\t,;]+)?(\d{4}-\d{1,2}-\d{1,2}[ T]+\d{1,2}:\d{2}(?::\d{2})?)/);
+      const m = l.match(/^\s*([^\s,;]+)[\s,;]+(?:"?([^\t,;"]*?)"?[\t,;]+)?(\d{4}-\d{1,2}-\d{1,2}[ T]+\d{1,2}:\d{2}(?::\d{2})?)(.*)$/);
       if (!m) continue; ok++;
       const dt = cellDateTime(m[3].replace('T', ' '), 'DMY');
-      if (dt) punches.push({ id: m[1], name: '', key: dt.key, min: dt.min });
+      // ملف attlog: الكود، الوقت، طريقة التحقق، الحالة (0 حضور / 1 انصراف)...
+      const rest = (m[4] || '').split(/[\t,;]+|\s+/).filter(Boolean);
+      const type = rest.length >= 2 ? stateOf(rest[1]) : null;
+      if (dt) punches.push({ id: m[1], name: '', key: dt.key, min: dt.min, type });
     }
     return ok >= Math.max(1, lines.length * 0.5) ? punches : null;
   }
@@ -139,7 +154,7 @@
     const order = detectOrder(body.flat());
     const cId = findCol(headers, COLS.id), cName = findCol(headers, COLS.name);
     const cIn = findCol(headers, COLS.clockin), cOut = findCol(headers, COLS.clockout);
-    const cDate = findCol(headers, COLS.date);
+    const cDate = findCol(headers, COLS.date), cState = findCol(headers, COLS.state);
     const punches = [], dates = new Set(), names = {};
     const id = r => String(r[cId] == null ? '' : r[cId]).trim().replace(/\.0$/, '');
 
@@ -149,8 +164,8 @@
         const key = cellDate(r[cDate], order); if (!key) continue;
         dates.add(key); if (cName >= 0 && r[cName]) names[i] = String(r[cName]).trim();
         const tIn = cellTime(r[cIn]), tOut = cellTime(r[cOut]);
-        if (tIn != null) punches.push({ id: i, key, min: tIn });
-        if (tOut != null) punches.push({ id: i, key, min: (tIn != null && tOut < tIn) ? tOut + 1440 : tOut });
+        if (tIn != null) punches.push({ id: i, key, min: tIn, type: 'in' });
+        if (tOut != null) punches.push({ id: i, key, min: (tIn != null && tOut < tIn) ? tOut + 1440 : tOut, type: 'out' });
       }
       return { kind: 'report', punches, dates: [...dates], names };
     }
@@ -170,7 +185,7 @@
       }
       if (!dt) continue;
       if (cName >= 0 && r[cName]) names[i] = String(r[cName]).trim();
-      punches.push({ id: i, key: dt.key, min: dt.min });
+      punches.push({ id: i, key: dt.key, min: dt.min, type: cState >= 0 ? stateOf(r[cState]) : null });
     }
     if (!punches.length) throw new Error('الملف اتقري بس مفيهوش بصمات مفهومة');
     return { kind: 'raw', punches, dates: [], names };
@@ -193,11 +208,11 @@
       const abs = dayNum(p.key) * 1440 + p.min;
       const dn = Math.floor((abs - cut) / 1440);
       const k = p.id + '|' + keyFromNum(dn);
-      (map[k] = map[k] || []).push(abs - dn * 1440);
+      (map[k] = map[k] || []).push({ t: abs - dn * 1440, type: p.type || null });
     }
     for (const k in map) {
-      const a = map[k].sort((x, y) => x - y), out = [];
-      for (const t of a) if (!out.length || t - out[out.length - 1] >= dd) out.push(t);
+      const a = map[k].sort((x, y) => x.t - y.t), out = [];
+      for (const p of a) { const last = out[out.length - 1]; if (!last || p.t - last.t >= dd || p.type !== last.type) out.push(p); }
       map[k] = out;
     }
     return map;
@@ -239,12 +254,20 @@
       for (let n = from; n <= to; n++) {
         const key = keyFromNum(n), k = id + '|' + key;
         const P = groups[k] || [], man = manual[k] || {};
-        let tin = P.length >= 1 ? P[0] : null, tout = P.length >= 2 ? P[P.length - 1] : null;
-        if (P.length === 1 && shifts.length) {
-          // بصمة واحدة: هل هي حضور ولا انصراف؟
-          let bestIn = Infinity, bestOut = Infinity;
-          for (const s of shifts) { bestIn = Math.min(bestIn, Math.abs(P[0] - s.st)); bestOut = Math.min(bestOut, Math.abs(P[0] - s.en)); }
-          if (bestOut < bestIn) { tout = P[0]; tin = null; }
+        let tin = null, tout = null;
+        if (P.some(p => p.type)) {
+          // الجهاز بيحدد نوع البصمة: أول بصمة حضور وآخر بصمة انصراف
+          const ins = P.filter(p => p.type === 'in').map(p => p.t), outs = P.filter(p => p.type === 'out').map(p => p.t);
+          tin = ins.length ? Math.min(...ins) : null; tout = outs.length ? Math.max(...outs) : null;
+          if (tin != null && tout != null && tout <= tin) tout = null;
+        } else {
+          tin = P.length >= 1 ? P[0].t : null; tout = P.length >= 2 ? P[P.length - 1].t : null;
+          if (P.length === 1 && shifts.length) {
+            // بصمة واحدة من غير نوع: أقرب لميعاد حضور ولا انصراف؟
+            let bestIn = Infinity, bestOut = Infinity;
+            for (const s of shifts) { bestIn = Math.min(bestIn, Math.abs(P[0].t - s.st)); bestOut = Math.min(bestOut, Math.abs(P[0].t - s.en)); }
+            if (bestOut < bestIn) { tout = P[0].t; tin = null; }
+          }
         }
         const mIn = hm(man.in), mOut = hm(man.out);
         if (mIn != null) tin = mIn;
@@ -254,7 +277,7 @@
           if (tin != null) { const r = nearestShift(tin, shifts, 'st'); shift = r.shift; ambiguous = r.gap < settings.ambiguousMinutes; }
           else if (tout != null) { const r = nearestShift(tout, shifts, 'en'); shift = r.shift; ambiguous = r.gap < settings.ambiguousMinutes; }
         }
-        days.push({ key, k, P, tin, tout, shift, ambiguous, manualShift: !!(man.shift && byId[man.shift]), manual: mIn != null || mOut != null });
+        days.push({ key, k, P, tin, tout, shift, ambiguous, absence: man.absence || '', manualShift: !!(man.shift && byId[man.shift]), manual: mIn != null || mOut != null });
       }
       // المرحلة 2: الحالات المحيّرة تاخد الشيفت الغالب للموظف
       const cnt = {};
@@ -275,8 +298,10 @@
         };
         if (d.tin == null && d.tout == null) {
           row.shift = ''; row.shiftId = '';
-          if (isOff) { row.code = 'off'; row.status = 'إجازة أسبوعية'; }
-          else { row.code = 'absent'; row.status = 'غياب'; }
+          if (isOff && !d.absence) { row.code = 'off'; row.status = 'إجازة أسبوعية'; }
+          else if (d.absence === 'excused') { row.code = 'excused'; row.status = 'غياب بإذن'; }
+          else if (d.absence === 'absent') { row.code = 'absent'; row.status = 'غياب'; }
+          else { row.code = 'pending'; row.status = 'مستني تسجيلك'; }
         } else if (d.tin == null || d.tout == null) {
           row.code = 'missing'; row.status = d.tin == null ? 'بصمة حضور ناقصة' : 'بصمة انصراف ناقصة';
           row.missingField = d.tin == null ? 'in' : 'out';
@@ -309,7 +334,7 @@
         offDay: off == null ? '' : DAY_NAMES[off],
         rows,
         summary: {
-          present: count('present'), absent: count('absent'), off: count('off'), offwork: count('offwork'), missing: count('missing'),
+          present: count('present'), absent: count('absent'), excused: count('excused'), pending: count('pending'), off: count('off'), offwork: count('offwork'), missing: count('missing'),
           worked: sum('worked'), late: sum('late'), lateDays: rows.filter(r => r.late > 0).length,
           lateExcused: sum('lateExcused'), early: sum('early'), earlyDays: rows.filter(r => r.early > 0).length,
           earlyExcused: sum('earlyExcused'), overtime: sum('overtime')

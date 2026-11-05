@@ -121,25 +121,44 @@
     // تنبيهات
     const notes = [];
     const noOff = res.filter(e => !e.offDay).map(e => e.name);
-    if (noOff.length) notes.push(h('div', { class: 'alert warn' }, `مفيش يوم إجازة متحدد لـ: ${noOff.join('، ')}. أيام إجازتهم هتتحسب غياب. `, h('button', { class: 'small', onclick: () => document.querySelector('nav [data-tab=emps]').click() }, 'حدد من هنا')));
+    if (noOff.length) notes.push(h('div', { class: 'alert warn' }, `مفيش يوم إجازة متحدد لـ: ${noOff.join('، ')}. يوم إجازتهم هيظهر مستني تسجيلك. `, h('button', { class: 'small', onclick: () => document.querySelector('nav [data-tab=emps]').click() }, 'حدد من هنا')));
     $('notices').replaceChildren(...notes);
 
-    // البصمات الناقصة
-    const miss = [];
-    for (const e of res) for (const r of e.rows) if (r.code === 'missing') miss.push({ e, r });
-    $('missing-card').hidden = !miss.length;
-    $('missing-count').textContent = miss.length;
-    $('missing-list').replaceChildren(...miss.map(({ e, r }) => {
-      const inp = h('input', { type: 'time', 'aria-label': r.missingField === 'in' ? 'وقت الحضور' : 'وقت الانصراف' });
-      const known = r.missingField === 'in' ? `انصراف ${C(r.out)}` : `حضور ${C(r.in)}`;
-      return h('div', { class: 'miss' },
-        h('div', { class: 'who' }, h('b', null, e.name), `${r.dayName} ${shortDate(r.date)} — ${known} — ناقص ${r.missingField === 'in' ? 'الحضور' : 'الانصراف'}`),
-        inp,
-        h('button', { class: 'small primary', onclick: () => {
-          if (!inp.value) { inp.focus(); return; }
-          const k = e.id + '|' + r.date; const m = S.manual[k] = S.manual[k] || {};
-          m[r.missingField] = inp.value; save(); renderAll();
-        } }, 'حفظ'));
+    // الأيام اللي مستنية تسجيلك
+    const todo = [];
+    for (const e of res) for (const r of e.rows) if (r.code === 'missing' || r.code === 'pending') todo.push({ e, r });
+    todo.sort((a, b) => b.r.date.localeCompare(a.r.date) || a.e.id.localeCompare(b.e.id, undefined, { numeric: true }));
+    $('missing-card').hidden = !todo.length;
+    $('missing-count').textContent = todo.length;
+    const pendingCount = todo.filter(x => x.r.code === 'pending').length;
+    const bulk = $('bulk-absent');
+    bulk.hidden = !pendingCount;
+    bulk.textContent = `اعتبر كل الأيام الفاضية (${pendingCount}) غياب`;
+    const setManual = (id, date, patch) => {
+      const k = id + '|' + date; const m = Object.assign(S.manual[k] || {}, patch);
+      for (const f in m) if (m[f] === undefined || m[f] === '') delete m[f];
+      if (Object.keys(m).length) S.manual[k] = m; else delete S.manual[k];
+      save(); renderAll();
+    };
+    $('missing-list').replaceChildren(...todo.map(({ e, r }) => {
+      const who = h('div', { class: 'who' }, h('b', null, e.name), `${r.dayName} ${shortDate(r.date)} — `);
+      if (r.code === 'missing') {
+        const inp = h('input', { type: 'time', 'aria-label': r.missingField === 'in' ? 'وقت الحضور' : 'وقت الانصراف' });
+        who.append(`${r.missingField === 'in' ? 'انصراف ' + C(r.out) : 'حضور ' + C(r.in)} — ناقص ${r.missingField === 'in' ? 'الحضور' : 'الانصراف'}`);
+        return h('div', { class: 'miss' }, who, inp,
+          h('button', { class: 'small primary', onclick: () => { if (!inp.value) { inp.focus(); return; } setManual(e.id, r.date, { [r.missingField]: inp.value }); } }, 'حفظ'));
+      }
+      who.append('مفيش ولا بصمة');
+      const tIn = h('input', { type: 'time', 'aria-label': 'وقت الحضور' }), tOut = h('input', { type: 'time', 'aria-label': 'وقت الانصراف' });
+      const times = h('div', { class: 'pend-times', hidden: true },
+        h('div', null, h('label', null, 'الحضور'), tIn), h('div', null, h('label', null, 'الانصراف'), tOut),
+        h('button', { class: 'small primary', onclick: () => { if (!tIn.value) return tIn.focus(); if (!tOut.value) return tOut.focus(); setManual(e.id, r.date, { in: tIn.value, out: tOut.value, absence: undefined }); } }, 'حفظ'));
+      return h('div', { class: 'pend' }, who,
+        h('div', { class: 'pend-btns' },
+          h('button', { class: 'small danger', onclick: () => setManual(e.id, r.date, { absence: 'absent' }) }, 'غياب'),
+          h('button', { class: 'small', onclick: () => setManual(e.id, r.date, { absence: 'excused' }) }, 'غياب بإذن'),
+          h('button', { class: 'small', onclick: () => { times.hidden = !times.hidden; if (!times.hidden) tIn.focus(); } }, 'سجّل حضور وانصراف')),
+        times);
     }));
 
     // النتيجة
@@ -161,6 +180,7 @@
         stat('ساعات العمل', D(s.worked), 'good'),
         stat('أيام الحضور', s.present + s.offwork),
         stat('أيام الغياب', s.absent, s.absent ? 'bad' : ''),
+        stat('غياب بإذن', s.excused),
         stat('التأخير', D(s.late), s.late ? 'bad' : ''),
         stat('انصراف بدري', D(s.early), s.early ? 'bad' : ''),
         stat('الزيادة', D(s.overtime), s.overtime ? 'good' : ''),
@@ -168,7 +188,8 @@
         stat('انصراف بإذن', D(s.earlyExcused)),
         stat('إجازات', s.off),
         s.offwork ? stat('شغل يوم إجازة', s.offwork) : null,
-        s.missing ? stat('بصمات ناقصة', s.missing, 'warn') : null));
+        s.missing ? stat('بصمات ناقصة', s.missing, 'warn') : null,
+        s.pending ? stat('مستني تسجيلك', s.pending, 'warn') : null));
   }
 
   const DETAIL_COLS = ['التاريخ', 'اليوم', 'الشيفت', 'الحضور', 'الانصراف', 'ساعات العمل', 'التأخير', 'تأخير بإذن', 'انصراف بدري', 'انصراف بإذن', 'الزيادة', 'الحالة'];
@@ -182,11 +203,18 @@
       h('td', null, r.overtime ? D(r.overtime) : ''),
       h('td', null, h('span', { class: 'tag t-' + r.code }, r.status))));
     const total = h('tr', { class: 'total' }, h('td', { colspan: 5 }, 'الإجمالي'), h('td', null, D(s.worked)), h('td', null, D(s.late)), h('td', null, D(s.lateExcused)),
-      h('td', null, D(s.early)), h('td', null, D(s.earlyExcused)), h('td', null, D(s.overtime)), h('td', null, `حضور ${s.present + s.offwork} · غياب ${s.absent}`));
+      h('td', null, D(s.early)), h('td', null, D(s.earlyExcused)), h('td', null, D(s.overtime)), h('td', null, `حضور ${s.present + s.offwork} · غياب ${s.absent} · بإذن ${s.excused}`));
     return h('div', null, h('div', { class: 'emp-title' }, `${e.name} — كود ${e.id}`),
       h('div', { class: 'table-wrap' }, h('table', null, h('thead', null, h('tr', null, DETAIL_COLS.map(c => h('th', null, c)))), h('tbody', null, body, total))));
   }
 
+  $('bulk-absent').addEventListener('click', () => {
+    const btn = $('bulk-absent');
+    if (!btn.dataset.confirm) { btn.dataset.confirm = '1'; btn.textContent = 'متأكد؟ اضغط تاني'; setTimeout(() => { delete btn.dataset.confirm; renderReport(); }, 4000); return; }
+    delete btn.dataset.confirm;
+    for (const e of computeNow() || []) for (const r of e.rows) if (r.code === 'pending') { const k = e.id + '|' + r.date; S.manual[k] = Object.assign(S.manual[k] || {}, { absence: 'absent' }); }
+    save(); renderAll();
+  });
   $('type-seg').addEventListener('click', ev => { const b = ev.target.closest('button'); if (!b) return; S.view.type = b.dataset.v; save(); renderReport(); });
   $('emp-sel').addEventListener('change', ev => { S.view.emp = ev.target.value; save(); renderReport(); });
   $('from').addEventListener('change', renderReport);
@@ -205,13 +233,16 @@
     sel.replaceChildren(h('option', { value: '' }, 'تلقائي' + (r.shift && !m.shift ? ` (${r.shift})` : '')), ...S.settings.shifts.map(s => h('option', { value: s.id }, `${s.name} ${s.start}–${s.end}`)));
     sel.value = m.shift || '';
     $('d-plate').checked = !!p.late; $('d-pearly').checked = !!p.early;
+    $('d-abs').value = m.absence || '';
+    $('d-abs-wrap').hidden = !!r.punches;
     $('day-dlg').showModal();
   }
   $('d-cancel').addEventListener('click', () => $('day-dlg').close());
   $('d-save').addEventListener('click', () => {
     const k = dlgCtx.id + '|' + dlgCtx.date;
-    const m = { in: $('d-in').value || undefined, out: $('d-out').value || undefined, shift: $('d-shift').value || undefined };
-    if (m.in || m.out || m.shift) S.manual[k] = JSON.parse(JSON.stringify(m)); else delete S.manual[k];
+    const m = { in: $('d-in').value || undefined, out: $('d-out').value || undefined, shift: $('d-shift').value || undefined, absence: (!$('d-abs-wrap').hidden && $('d-abs').value) || undefined };
+    if (m.in || m.out) m.absence = undefined;
+    if (m.in || m.out || m.shift || m.absence) S.manual[k] = JSON.parse(JSON.stringify(m)); else delete S.manual[k];
     setPerm(dlgCtx.id, dlgCtx.date, $('d-plate').checked, $('d-pearly').checked);
     save(); $('day-dlg').close(); renderAll();
   });
@@ -233,13 +264,13 @@
     const aoa = [[txt(title)], []];
     let widths;
     if (isSum) {
-      const head = ['الكود', 'الاسم', 'يوم الإجازة', 'أيام الحضور', 'أيام الغياب', 'إجازات', 'شغل يوم إجازة', 'بصمات ناقصة', 'ساعات العمل', 'التأخير', 'أيام التأخير', 'تأخير بإذن', 'انصراف بدري', 'أيام الانصراف بدري', 'انصراف بدري بإذن', 'الزيادة'];
+      const head = ['الكود', 'الاسم', 'يوم الإجازة', 'أيام الحضور', 'أيام الغياب', 'غياب بإذن', 'إجازات', 'شغل يوم إجازة', 'بصمات ناقصة', 'مستني تسجيل', 'ساعات العمل', 'التأخير', 'أيام التأخير', 'تأخير بإذن', 'انصراف بدري', 'أيام الانصراف بدري', 'انصراف بدري بإذن', 'الزيادة'];
       aoa.push(head.map(txt));
       for (const e of list) {
         const s = e.summary;
-        aoa.push([txt(e.id), txt(e.name), txt(e.offDay), num(s.present + s.offwork), num(s.absent), num(s.off), num(s.offwork), num(s.missing), dur(s.worked), dur(s.late), num(s.lateDays), dur(s.lateExcused), dur(s.early), num(s.earlyDays), dur(s.earlyExcused), dur(s.overtime)]);
+        aoa.push([txt(e.id), txt(e.name), txt(e.offDay), num(s.present + s.offwork), num(s.absent), num(s.excused), num(s.off), num(s.offwork), num(s.missing), num(s.pending), dur(s.worked), dur(s.late), num(s.lateDays), dur(s.lateExcused), dur(s.early), num(s.earlyDays), dur(s.earlyExcused), dur(s.overtime)]);
       }
-      widths = [8, 24, 11, 11, 11, 9, 13, 12, 12, 10, 11, 11, 12, 16, 16, 10];
+      widths = [8, 24, 11, 11, 11, 10, 9, 13, 12, 12, 12, 10, 11, 11, 12, 16, 16, 10];
     } else {
       const head = ['الكود', 'الاسم', ...DETAIL_COLS];
       aoa.push(head.map(txt));
@@ -249,7 +280,7 @@
           x.early ? dur(x.early) : txt(''), x.earlyExcused ? dur(x.earlyExcused) : txt(''), x.overtime ? dur(x.overtime) : txt(''), txt(x.status)]);
         const s = e.summary;
         aoa.push([txt(''), txt(`إجمالي ${e.name}`), txt(''), txt(''), txt(''), txt(''), txt(''), dur(s.worked), dur(s.late), dur(s.lateExcused), dur(s.early), dur(s.earlyExcused), dur(s.overtime),
-          txt(`حضور ${s.present + s.offwork} · غياب ${s.absent} · إجازات ${s.off}${s.missing ? ' · ناقص ' + s.missing : ''}`)]);
+          txt(`حضور ${s.present + s.offwork} · غياب ${s.absent} · غياب بإذن ${s.excused} · إجازات ${s.off}${s.missing ? ' · ناقص ' + s.missing : ''}${s.pending ? ' · مستني تسجيل ' + s.pending : ''}`)]);
         aoa.push([]);
       }
       widths = [8, 22, 12, 10, 9, 9, 9, 11, 9, 11, 11, 13, 9, 30];

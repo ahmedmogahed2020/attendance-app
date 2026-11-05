@@ -54,7 +54,6 @@ button:disabled{opacity:.5}
 .alert.err{background:var(--danger-bg);color:var(--danger)}
 .alert.ok{background:var(--ok-bg);color:var(--ok)}
 .miss{display:grid;grid-template-columns:1fr 120px auto;gap:8px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
-.miss:first-of-type{border-top:0}
 .miss .who{font-size:14px}
 .miss .who b{display:block;font-size:15px}
 .emp-card{border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px}
@@ -76,6 +75,14 @@ tr.total td{font-weight:700;background:var(--accent-2)}
 .t-present{background:var(--ok-bg);color:var(--ok)}
 .t-absent{background:var(--danger-bg);color:var(--danger)}
 .t-missing{background:var(--warn-bg);color:var(--warn)}
+.t-pending{background:var(--warn-bg);color:var(--warn);border:1px dashed currentColor}
+.t-excused{background:var(--accent-2);color:var(--accent)}
+.pend{padding:10px 0;border-top:1px solid var(--line)}
+.pend:first-child,.miss:first-child{border-top:0}
+.pend .who{font-size:14px;margin-bottom:8px}.pend .who b{display:block;font-size:15px}
+.pend-btns{display:flex;gap:6px;flex-wrap:wrap}.pend-btns button{flex:1 1 auto}
+.pend-times{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end;margin-top:8px}
+.pend-times[hidden]{display:none}
 .t-off,.t-offwork{background:var(--off-bg);color:var(--off)}
 .emp-title{font-weight:700;margin:14px 0 6px}
 .list-item{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
@@ -118,9 +125,10 @@ dialog h2{margin:0 0 4px;font-size:18px}
     <div id="notices"></div>
 
     <div class="card" id="missing-card" hidden>
-      <h2>بصمات ناقصة <span class="tag t-missing" id="missing-count"></span></h2>
-      <p class="muted" style="margin-top:0">اكتب الوقت الناقص واضغط حفظ. لحد ما تكتبه، اليوم ده مش هيتحسب.</p>
+      <h2>محتاج تسجيلك <span class="tag t-missing" id="missing-count"></span></h2>
+      <p class="muted" style="margin-top:0">الأيام دي ناقصها بصمة أو مفيهاش بصمات خالص. لحد ما تسجّلها مش هتتحسب في التقرير.</p>
       <div id="missing-list"></div>
+      <div class="btns"><button class="danger" id="bulk-absent" hidden></button></div>
     </div>
 
     <div class="card" id="report-card" hidden>
@@ -226,6 +234,8 @@ dialog h2{margin:0 0 4px;font-size:18px}
     <label><input type="checkbox" id="d-plate"> تأخير بإذن</label>
     <label><input type="checkbox" id="d-pearly"> انصراف بدري بإذن</label>
   </div>
+  <div id="d-abs-wrap" style="margin-top:10px"><label for="d-abs">لو مفيش حضور</label>
+    <select id="d-abs"><option value="">مستني تسجيلك</option><option value="absent">غياب</option><option value="excused">غياب بإذن</option></select></div>
   <p class="muted" style="margin:4px 0 0">سيب خانة الوقت فاضية عشان ياخد وقت البصمة من الجهاز.</p>
   <div class="btns">
     <button class="primary" id="d-save">حفظ</button>
