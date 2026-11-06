@@ -37,11 +37,12 @@
   const norm = h => String(h == null ? '' : h).toLowerCase().replace(/[\s._\-\/\\()]/g, '');
 
   function parseTimeStr(s) {
-    const m = String(s).match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?|ص|م)?/i);
+    const m = String(s).match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?|ص|م|ã|Õ|Ù…|Øµ|مساء|صباح)?/i);
     if (!m) return null;
     let h = +m[1]; const mi = +m[2]; const ap = (m[4] || '').toLowerCase().replace(/\./g, '');
-    if (ap === 'pm' || ap === 'م') { if (h < 12) h += 12; }
-    else if (ap === 'am' || ap === 'ص') { if (h === 12) h = 0; }
+    // الجهاز بيكتب م/ص بترميز عربي قديم (Windows-1256) فبتتقري ã و Õ
+    if (['pm', 'م', 'ã', 'ù…', 'مساء'].includes(ap)) { if (h < 12) h += 12; }
+    else if (['am', 'ص', 'õ', 'øµ', 'صباح'].includes(ap)) { if (h === 12) h = 0; }
     if (h > 47 || mi > 59) return null;
     return h * 60 + mi;
   }
@@ -110,6 +111,8 @@
     datetime: ['datetime', 'checktime', 'punchtime', 'clocktime', 'timestamp', 'attendancetime', 'verifytime', 'recordtime', 'التاريخوالوقت', 'وقتالبصمة', 'time'],
     clockin: ['clockin', 'checkin', 'in', 'حضور', 'الحضور', 'وقتالحضور'],
     clockout: ['clockout', 'checkout', 'out', 'انصراف', 'الانصراف', 'وقتالانصراف'],
+    newstate: ['newstate', 'الحالةالجديدة', 'correctedstate'],
+    exception: ['exception', 'الاستثناء'],
     state: ['state', 'status', 'checktype', 'inout', 'punchstate', 'attstate', 'attendancestate', 'punchtype', 'checkstate', 'الحالة', 'نوعالبصمة', 'حالةالبصمة', 'نوعالحركة']
   };
   /** نوع البصمة: حضور / انصراف (من زرار الحالة في الجهاز) */
@@ -155,7 +158,7 @@
     const order = detectOrder(body.flat());
     const cId = findCol(headers, COLS.id), cName = findCol(headers, COLS.name);
     const cIn = findCol(headers, COLS.clockin), cOut = findCol(headers, COLS.clockout);
-    const cDate = findCol(headers, COLS.date), cState = findCol(headers, COLS.state);
+    const cDate = findCol(headers, COLS.date), cState = findCol(headers, COLS.state), cNew = findCol(headers, COLS.newstate), cExc = findCol(headers, COLS.exception);
     const punches = [], dates = new Set(), names = {};
     const id = r => String(r[cId] == null ? '' : r[cId]).trim().replace(/\.0$/, '');
 
@@ -186,10 +189,12 @@
       }
       if (!dt) continue;
       if (cName >= 0 && r[cName]) names[i] = String(r[cName]).trim();
-      punches.push({ id: i, key: dt.key, min: dt.min, type: cState >= 0 ? stateOf(r[cState]) : null });
+      // New State = نوع البصمة بعد ما اتعدّل في الجهاز، بيغلب على State
+      const nt = cNew >= 0 ? stateOf(r[cNew]) : null, ot = cState >= 0 ? stateOf(r[cState]) : null;
+      punches.push({ id: i, key: dt.key, min: dt.min, type: nt || ot, changed: !!(nt && nt !== ot), exc: cExc >= 0 ? String(r[cExc] || '').trim() : '' });
     }
     if (!punches.length) throw new Error('الملف اتقري بس مفيهوش بصمات مفهومة');
-    return { kind: 'raw', punches, dates: [], names };
+    return { kind: 'raw', punches, dates: [], names, hasState: cState >= 0 };
   }
 
   /* ---------- الحساب ---------- */
@@ -370,5 +375,5 @@
     return { from: ks[0], to: ks[ks.length - 1] };
   }
 
-  return { hoursOf, DEFAULT_SETTINGS, DAY_NAMES, parseRows, parseAttlogText, compute, dataRange, fmtClock, fmtDur, hm, weekday, dayNum, keyFromNum };
+  return { stateOf, hoursOf, DEFAULT_SETTINGS, DAY_NAMES, parseRows, parseAttlogText, compute, dataRange, fmtClock, fmtDur, hm, weekday, dayNum, keyFromNum };
 });

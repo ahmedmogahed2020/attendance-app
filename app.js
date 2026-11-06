@@ -36,6 +36,9 @@
   function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('مش قادر أحفظ — مساحة الموبايل ممكن تكون مليانة'); } }
 
   /* ======================= أدوات ======================= */
+  // replaceChildren بتكتب null وقوايم كنص — نخليها تتجاهل الفاضي وتفرد القوايم
+  const _rc = Element.prototype.replaceChildren;
+  Element.prototype.replaceChildren = function (...k) { return _rc.apply(this, k.flat(3).filter(x => x != null && x !== false)); };
   function h(tag, attrs, ...kids) {
     const el = document.createElement(tag);
     for (const k in (attrs || {})) {
@@ -95,7 +98,14 @@
   /* ======================= الحساب ======================= */
   const calcState = () => Object.assign({}, S, { onlyListed: true });
   const data = () => ({ punches: S.punches, names: S.names });
-  function computeRange(from, to) { return E.compute(calcState(), data(), { from, to }); }
+  function computeRange(from, to) {
+    const res = E.compute(calcState(), data(), { from, to });
+    const now = new Date(), nm = now.getHours() * 60 + now.getMinutes(), cut = (S.settings.dayCutHour ?? 5) * 60, t = todayKey();
+    const openDay = nm < cut ? addDays(t, -1) : t;
+    if (from <= openDay && to >= openDay) for (const e of res) for (const r of e.rows)
+      if (r.date === openDay && r.code === 'missing' && r.missingField === 'out') { r.code = 'working'; r.status = 'لسه في الشغل'; r.nowMin = r.date === t ? nm : nm + 1440; const sh = S.settings.shifts.find(x => x.id === r.shiftId); if (sh) { const raw = r.in - E.hm(sh.start), g = +S.settings.grace || 0; r.late = raw > g ? raw - g : 0; if (r.permLate && r.late) { r.lateExcused = r.late; r.late = 0; } } e.summary.missing--; e.summary.working = (e.summary.working || 0) + 1; }
+    return res;
+  }
   function monthRange(m) {
     const [y, mo] = m.split('-').map(Number), last = `${m}-${pad(new Date(y, mo, 0).getDate())}`, today = todayKey();
     return { from: `${m}-01`, to: last < today ? last : today, end: last, future: `${m}-01` > today };
@@ -174,7 +184,7 @@
     const rows = computeRange(date, date).filter(e => e.rows.length).map(e => e.rows[0]);
     const need = rows.filter(r => r.code === 'pending' || r.code === 'missing').length;
     const done = rows.length - (future ? rows.filter(r => r.code === 'pending').length : need);
-    const present = rows.filter(r => r.code === 'present' || r.code === 'offwork');
+    const present = rows.filter(r => ['present', 'offwork', 'working'].includes(r.code));
     const byShift = {}; for (const r of present) if (r.shift) byShift[r.shift] = (byShift[r.shift] || 0) + 1;
     const C2 = 2 * Math.PI * 15.5, frac = rows.length ? done / rows.length : 0;
     const ring = h('div', { class: 'ring', html: `<svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15.5" fill="none" stroke="rgba(255,255,255,.22)" stroke-width="3.5"/><circle cx="18" cy="18" r="15.5" fill="none" stroke="#F4C53A" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="${(C2 * frac).toFixed(1)} ${C2.toFixed(1)}"/></svg>` },
@@ -219,7 +229,7 @@
     const all = computeRange(date, date).filter(e => e.rows.length).map(e => ({ e, r: e.rows[0] }));
     if (!all.length) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'مفيش موظفين شغالين اليوم ده'), 'راجع تاريخ بداية وترك الشغل في شاشة الموظفين.')); return; }
     const isNeed = r => r.code === 'pending' || r.code === 'missing';
-    const groups = { all: () => true, present: r => r.code === 'present' || r.code === 'offwork', absent: r => ['absent', 'excused', 'leave', 'off'].includes(r.code), need: isNeed };
+    const groups = { all: () => true, present: r => ['present', 'offwork', 'working'].includes(r.code), absent: r => ['absent', 'excused', 'leave', 'off'].includes(r.code), need: isNeed };
     const cnt = f => all.filter(x => groups[f](x.r)).length;
     const mode = S.view.dayMode || 'timeline';
     const vt = (v, l) => h('button', { class: mode === v ? 'on' : '', onclick: () => { S.view.dayMode = v; save(); render(); } }, l);
@@ -249,10 +259,12 @@
     if (r.permLate) out.push(h('span', { class: 'flag v' }, 'تأخير بإذن'));
     if (r.permEarly) out.push(h('span', { class: 'flag v' }, 'انصراف بإذن'));
     if (r.code === 'missing') out.push(h('span', { class: 'flag a' }, `ناقص ${r.missingField === 'in' ? 'الحضور' : 'الانصراف'}`));
+    if (r.code === 'working' && r.late) out.push(h('span', { class: 'flag r' }, 'تأخير ' + D(r.late)));
     const n = (S.notes[k] || []).length; if (n) out.push(h('span', { class: 'flag n' }, '📝 ' + n));
     return out;
   }
   function rowSub(r) {
+    if (r.code === 'working') return [r.shift, `حضر ${C(r.in)}`, `بقاله ${D(r.nowMin - r.in)}`].filter(Boolean).join(' · ');
     if (r.in != null || r.out != null) return [r.shift, `${C(r.in) || '—'} ← ${C(r.out) || '—'}`, r.worked != null ? D(r.worked) + ' س' : null].filter(Boolean).join(' · ');
     if (r.code === 'pending') return r.date < (S.settings.deviceFrom || '') ? 'قبل تشغيل الجهاز — سجّل يدوي' : 'مفيش بصمات من الجهاز';
     return r.status;
@@ -283,7 +295,7 @@
       let en = hrs ? st + hrs : E.hm(s.end); if (en <= st) en += 1440; return { st, en };
     };
     let lo = Math.min(...sh.map(s => s.st)), hi = Math.max(...sh.map(s => s.en));
-    for (const { r } of rows) { if (r.in != null) lo = Math.min(lo, r.in); if (r.out != null) hi = Math.max(hi, r.out); }
+    for (const { r } of rows) { if (r.in != null) lo = Math.min(lo, r.in); if (r.out != null) hi = Math.max(hi, r.out); if (r.nowMin) hi = Math.max(hi, Math.min(r.nowMin, lo + 20 * 60)); }
     const t0 = Math.floor((lo - 30) / 60) * 60, t1 = Math.ceil((hi + 30) / 60) * 60, span = t1 - t0;
     const P = t => ((t - t0) / span * 100).toFixed(2) + '%', W = (a, b) => (Math.max(0, b - a) / span * 100).toFixed(2) + '%';
     const seg = (cls, a, b, extra) => h('i', { class: 'tl-' + cls, style: `right:${P(a)};width:${W(a, b)}` + (extra || '') });
@@ -300,7 +312,8 @@
         if (w && r.early) parts.push(seg('late', r.out, w.en));
         if (w && r.permEarly && r.earlyExcused) parts.push(seg('perm', r.out, w.en));
         if (w && r.overtime) parts.push(seg('ot', w.en, r.out));
-      } else if (r.in != null) parts.push(seg('on fade-l', r.in, Math.min(r.in + 150, t1)));
+      } else if (r.code === 'working') { parts.push(seg('on', r.in, Math.min(r.nowMin, t1))); if (w && r.late) parts.push(seg('late', w.st, r.in)); parts.push(seg('now', Math.min(r.nowMin, t1) - 2, Math.min(r.nowMin, t1))); }
+      else if (r.in != null) parts.push(seg('on fade-l', r.in, Math.min(r.in + 150, t1)));
       else if (r.out != null) parts.push(seg('on fade-r', Math.max(r.out - 150, t0), r.out));
       else if (['absent', 'excused', 'leave', 'off'].includes(r.code)) parts.push(h('em', { class: 'tl-lbl c-' + r.code }, r.status));
       else if (!future) parts.push(h('em', { class: 'tl-lbl c-pending' }, 'مستني تسجيلك'));
@@ -1130,40 +1143,113 @@
   }
 
   /* ======================= رفع ملف الجهاز ======================= */
-  $('upload-btn').addEventListener('click', () => $('file').click());
+  let expectKind = '';
+  $('upload-btn').addEventListener('click', uploadChooser);
+  function xlsSample(cols, rows) {
+    return h('table', { class: 'xls', dir: 'ltr' }, h('tr', null, cols.map(c => h('th', null, c))), rows.map(r => h('tr', null, r.map(c => h('td', null, c)))));
+  }
+  function uploadChooser() {
+    const opt = (kind, title, tag, desc, sample) => h('button', { class: 'up-opt' + (tag ? ' rec' : ''), onclick: () => { expectKind = kind; $('sheet').close(); $('file').click(); } },
+      h('div', { class: 'up-h' }, h('b', null, title), tag ? h('span', { class: 'up-tag' }, tag) : null), h('p', null, desc), sample);
+    openSheet([h('div', { class: 'grab' }), h('h2', { style: 'margin-bottom:2px' }, 'رفع ملف الجهاز'), h('p', { class: 'muted', style: 'margin:0 0 12px' }, 'اختار نوع الملف اللي طلّعته من الجهاز'),
+      opt('raw', 'سجل البصمات', 'الأحسن', 'كل بصمة في سطر بوقتها ونوعها (حضور/انصراف). بيشتغل مع الشيفتين.', xlsSample(['AC-No.', 'Name', 'Time', 'State'], [['102', 'SONDES', '2026/11/06 03:36 م', 'C/In'], ['102', 'SONDES', '2026/11/06 06:03 م', 'C/Out']])),
+      opt('report', 'تقرير الحضور', null, 'سطر لكل موظف في اليوم فيه حضور وانصراف. الجهاز بيظبطه على شيفت واحد، فممكن يضيّع بصمات المسائي.', xlsSample(['AC-No.', 'Name', 'Date', 'Clock In', 'Clock Out'], [['102', 'SONDES', '2026/11/06', '10:05', '18:02']])),
+      h('div', { class: 'up-note' }, '💡 مش متأكد؟ اختار أي واحد — لو الملف طلع من النوع التاني، التطبيق هيقولك ويقراه صح.')]);
+  }
   $('file').addEventListener('change', async ev => {
     const f = ev.target.files[0]; if (!f) return;
-    try {
-      let parsed;
-      if (/\.(dat|txt)$/i.test(f.name)) {
-        const text = await f.text(), p = E.parseAttlogText(text);
-        parsed = p ? { kind: 'raw', punches: p, dates: [], names: {} } : parseWorkbook(XLSX.read(text, { type: 'string' }));
-      } else parsed = parseWorkbook(XLSX.read(await f.arrayBuffer(), { type: 'array' }));
-      const range = E.dataRange(parsed);
-      if (!range) throw new Error('الملف مفيهوش تواريخ');
-      let addedEmp = 0;
-      const ids = new Set(parsed.punches.map(p => p.id).concat(Object.keys(parsed.names)));
-      // تاريخ بداية الموظف الجديد = أول بصمة ليه (بعد فترة تجربة الجهاز)، مش أول يوم في الملف
-      const first = {}, df = S.settings.deviceFrom || '';
-      for (const p of parsed.punches) if (p.key >= df && (!first[p.id] || p.key < first[p.id])) first[p.id] = p.key;
-      for (const id of ids) {
-        if (parsed.names[id] && !S.names[id]) S.names[id] = parsed.names[id];
-        if (S.removed[id]) continue;
-        if (!S.employees[id]) { S.employees[id] = { name: parsed.names[id] || '', off: '', shift: '', start: first[id] || (range.from > df ? range.from : df), end: '' }; addedEmp++; }
-        else if (!S.employees[id].name && parsed.names[id]) S.employees[id].name = parsed.names[id];
-      }
-      const added = mergePunches(parsed.punches);
-      S.imports.unshift({ name: f.name, at: todayKey(), count: added, from: range.from, to: range.to }); S.imports = S.imports.slice(0, 50);
-      save();
-      toast(`اتقرا الملف: ${added} بصمة جديدة` + (addedEmp ? ` و${addedEmp} موظف جديد — كمّل بياناتهم` : ''));
-      UI.month = monthOf(range.to);
-      if (addedEmp) go('emps'); else render();
-      // مراجعة التأخير والانصراف بدري اللي ملهمش إذن في الفترة اللي الملف غطاها
-      const rf = range.from > (S.settings.deviceFrom || '') ? range.from : S.settings.deviceFrom, rt = range.to < todayKey() ? range.to : todayKey();
-      if (!addedEmp && rf <= rt && reviewItems(rf, rt).length) setTimeout(() => reviewSheet(rf, rt), 700);
-    } catch (e) { console.error(e); toast('مقدرتش أقرا الملف: ' + (e.message || e)); }
+    try { importPreview(await readDeviceFile(f), f.name); }
+    catch (e) { console.error(e); toast('مقدرتش أقرا الملف: ' + (e.message || e)); }
     ev.target.value = '';
   });
+  async function readDeviceFile(f) {
+    let parsed;
+    if (/\.(dat|txt)$/i.test(f.name)) {
+      const text = await f.text(), p = E.parseAttlogText(text);
+      parsed = p ? { kind: 'raw', punches: p, dates: [], names: {}, hasState: p.some(x => x.type) } : parseWorkbook(XLSX.read(text, { type: 'string' }));
+    } else parsed = parseWorkbook(XLSX.read(await f.arrayBuffer(), { type: 'array' }));
+    if (!E.dataRange(parsed)) throw new Error('الملف مفيهوش تواريخ');
+    return parsed;
+  }
+  const pKey = p => `${p.id}|${p.key}|${p.min}|${p.type || ''}`;
+  const KIND_NAME = { raw: 'سجل البصمات', report: 'تقرير الحضور' };
+  /** اليوم اللي البصمة بتتحسب عليه (البصمة بعد 12 بالليل وقبل آخر اليوم تتبع اليوم اللي قبله) */
+  const effDate = p => p.min < (S.settings.dayCutHour ?? 5) * 60 ? addDays(p.key, -1) : p.min >= 1440 ? addDays(p.key, 1) : p.key;
+  function importPreview(parsed, fname) {
+    const df = S.settings.deviceFrom || '', existing = new Set(S.punches.map(pKey)), seen = new Set();
+    const ps = [...parsed.punches].sort((a, b) => a.key.localeCompare(b.key) || a.min - b.min || a.id.localeCompare(b.id, undefined, { numeric: true }));
+    let fresh = 0, dup = 0, already = 0, before = 0; const days = new Set(), notes = new Map();
+    for (const p of ps) {
+      const k = pKey(p), d = effDate(p), n = [];
+      if (seen.has(k) || /repeat/i.test(p.exc || '')) { dup++; n.push('مكررة'); }
+      else if (existing.has(k)) { already++; n.push('موجودة قبل كده'); }
+      else if (df && d < df) { before++; n.push('قبل تشغيل الجهاز — هتتجاهل'); }
+      else { fresh++; days.add(d); }
+      if (p.changed) n.push('اتعدّلت في الجهاز');
+      seen.add(k); notes.set(p, n);
+    }
+    const ids = [...new Set(ps.map(p => p.id).concat(Object.keys(parsed.names)))].sort((a, b) => +a - +b);
+    const newIds = ids.filter(id => !S.employees[id] && !S.removed[id]);
+    const looksAdmin = id => /admin|مدير|test|تجرب/i.test(parsed.names[id] || '');
+    const accept = new Set(newIds.filter(id => !looksAdmin(id)));
+    // تنبيهات: حضور وانصراف لنفس الموظف في نفس الدقايق
+    const warns = [];
+    const byId = {}; for (const p of ps) (byId[p.id + '|' + effDate(p)] = byId[p.id + '|' + effDate(p)] || []).push(p);
+    for (const k in byId) { const a = byId[k]; for (let i = 1; i < a.length; i++) if (a[i].type && a[i - 1].type && a[i].type !== a[i - 1].type && Math.abs(a[i].min - a[i - 1].min) < (S.settings.dedupeMinutes ?? 10)) { const [id, d] = k.split('|'); warns.push(`${parsed.names[id] || 'موظف ' + id} (${id}) يوم ${fmtDate(d)}: بصمة حضور وانصراف ورا بعض في نفس الوقت — هيتحسب حضور بس والانصراف هيستناك.`); break; } }
+    if (parsed.kind === 'raw' && !parsed.hasState) warns.push('الملف مفيهوش نوع البصمة (حضور/انصراف)، فأول بصمة في اليوم هتتحسب حضور وآخر بصمة انصراف.');
+    const range = E.dataRange(parsed), dl = [...days].sort();
+    let showAll = false;
+    const draw = () => {
+      const typeLbl = p => p.type === 'in' ? h('span', { class: 'in' }, 'حضور') : p.type === 'out' ? h('span', { class: 'out' }, 'انصراف') : h('span', { class: 'muted' }, '—');
+      const rows = (showAll ? ps : ps.slice(0, 8)).map(p => h('div', { class: 'pv-r' + (notes.get(p).some(x => /هتتجاهل|مكررة|موجودة/.test(x)) ? ' dim' : '') },
+        h('span', null, p.id), h('span', { class: 'pv-n', dir: 'auto' }, parsed.names[p.id] || ''),
+        h('span', null, fmtDate(p.key).slice(0, -5), h('small', null, fmt12(p.min))), h('span', null, typeLbl(p), notes.get(p).length ? h('small', null, notes.get(p).join(' · ')) : null)));
+      const mismatch = expectKind && expectKind !== parsed.kind;
+      $('sheet-in').replaceChildren(
+        h('div', { class: 'cf-top' }, h('b', null, 'راجع قبل الحفظ'), h('button', { class: 'note-x', 'aria-label': 'إلغاء', onclick: () => $('sheet').close() }, '×')),
+        h('div', { class: 'muted', style: 'margin:-6px 0 10px', dir: 'auto' }, fname),
+        mismatch ? h('div', { class: 'warn-line', style: 'margin-bottom:8px' }, `اخترت "${KIND_NAME[expectKind]}" بس الملف طلع "${KIND_NAME[parsed.kind]}" — اتقرا كـ "${KIND_NAME[parsed.kind]}".`) : null,
+        h('div', { class: 'qchips', style: 'margin-bottom:10px' }, h('span', { class: 'mini ok' }, '✓ ' + KIND_NAME[parsed.kind]),
+          h('span', { class: 'mini' }, range.from === range.to ? longDate(range.from) : `${fmtDate(range.from)} ← ${fmtDate(range.to)}`)),
+        h('div', { class: 'totals' }, h('div', { class: 'total' }, h('b', null, fresh), h('span', null, 'بصمة جديدة')), h('div', { class: 'total' }, h('b', null, ids.length), h('span', null, 'موظف')),
+          h('div', { class: 'total' }, h('b', { style: 'color:var(--muted)' }, dup + already), h('span', null, 'مكررة/موجودة')), h('div', { class: 'total' }, h('b', { style: 'color:var(--muted)' }, before), h('span', null, 'قبل التشغيل'))),
+        h('div', { class: 'sec-title' }, 'اتقرا كده'),
+        h('div', { class: 'list pv' }, h('div', { class: 'pv-r pv-h' }, h('span', null, 'الكود'), h('span', null, 'الاسم'), h('span', null, 'الوقت'), h('span', null, 'النوع')), rows),
+        ps.length > 8 ? h('button', { class: 'btn ghost sm', onclick: () => { showAll = !showAll; draw(); } }, showAll ? 'اعرض أقل' : `اعرض كل السطور (${ps.length})`) : null,
+        newIds.length ? [h('div', { class: 'sec-title' }, 'موظفين جداد — علّم على اللي يتضاف'),
+          h('div', { class: 'list' }, newIds.map(id => h('label', { class: 'pv-ne' },
+            h('input', { type: 'checkbox', checked: accept.has(id), onchange: ev => { ev.target.checked ? accept.add(id) : accept.delete(id); } }),
+            h('span', { class: 'grow' }, h('b', { dir: 'auto' }, parsed.names[id] || 'موظف ' + id), ' · ' + id,
+              looksAdmin(id) ? h('small', { style: 'display:block;color:var(--amber-ink)' }, 'شكله حساب مدير الجهاز — مش هيتضاف إلا لو علّمت عليه') : null))))] : null,
+        warns.map(w => h('div', { class: 'warn-line' }, '⚠ ' + w)),
+        h('div', { class: 'btns', style: 'margin-top:14px' },
+          h('button', { class: 'btn primary', style: 'flex:2', disabled: !fresh && !accept.size, onclick: () => { $('sheet').close(); applyImport(parsed, fname, accept, newIds); } }, fresh ? `حفظ ${fresh} بصمة` : 'حفظ'),
+          h('button', { class: 'btn', style: 'flex:1', onclick: () => $('sheet').close() }, 'إلغاء')));
+    };
+    UI.editor = null; $('sheet').classList.add('full'); draw(); if (!$('sheet').open) $('sheet').showModal();
+  }
+  const fmt12 = min => { const m = ((min % 1440) + 1440) % 1440, hh = Math.floor(m / 60), mm = m % 60; return `${hh % 12 || 12}:${pad(mm)} ${hh < 12 ? 'ص' : 'م'}`; };
+  function applyImport(parsed, fname, accept, newIds) {
+    const range = E.dataRange(parsed), df = S.settings.deviceFrom || '';
+    const first = {};
+    for (const p of parsed.punches) { const d = effDate(p); if (d >= df && (!first[p.id] || d < first[p.id])) first[p.id] = d; }
+    let addedEmp = 0;
+    for (const id of new Set(parsed.punches.map(p => p.id).concat(Object.keys(parsed.names)))) {
+      if (parsed.names[id] && !S.names[id]) S.names[id] = parsed.names[id];
+      if (newIds.includes(id) && !accept.has(id)) { S.removed[id] = true; continue; } // اتجاهل (زي ADMIN)
+      if (S.removed[id]) continue;
+      if (!S.employees[id]) { S.employees[id] = { name: parsed.names[id] || '', off: '', shift: '', hours: '', start: first[id] || (range.from > df ? range.from : df), end: '' }; addedEmp++; }
+      else if (!S.employees[id].name && parsed.names[id]) S.employees[id].name = parsed.names[id];
+    }
+    const added = mergePunches(parsed.punches.filter(p => !S.removed[p.id]));
+    S.imports.unshift({ name: fname, at: todayKey(), count: added, from: range.from, to: range.to, kind: parsed.kind }); S.imports = S.imports.slice(0, 50);
+    save();
+    toast(`اتحفظ: ${added} بصمة جديدة` + (addedEmp ? ` و${addedEmp} موظف جديد — كمّل بياناتهم` : ''));
+    UI.month = monthOf(range.to); UI.gmonth = UI.month;
+    if (addedEmp) { UI.profile = ''; go('emps'); } else render();
+    const rf = range.from > df ? range.from : df, rt = range.to < todayKey() ? range.to : todayKey();
+    if (!addedEmp && rf <= rt && reviewItems(rf, rt).length) setTimeout(() => reviewSheet(rf, rt), 700);
+  }
   function parseWorkbook(wb) {
     let best = null, err = null;
     for (const name of wb.SheetNames) {
