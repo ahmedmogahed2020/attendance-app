@@ -20,6 +20,12 @@
   function normalize() {
     S.settings = Object.assign(clone(E.DEFAULT_SETTINGS), S.settings || {});
     S.backup = Object.assign(blank().backup, S.backup || {});
+    if (!S.settings.v3) { // شيفت رمضان المقسوم + قاعدة الجمعة ورمضان
+      if (!S.settings.shifts.some(x => x.id === 'r')) S.settings.shifts.push(clone(E.DEFAULT_SETTINGS.shifts.find(x => x.id === 'r')));
+      if (!Array.isArray(S.settings.rules)) S.settings.rules = clone(E.DEFAULT_SETTINGS.rules);
+      if (S.settings.hoursGrace == null) S.settings.hoursGrace = 10;
+      S.settings.v3 = 1;
+    }
     if (!S.backup.init) { S.backup.freq = 'daily'; S.backup.init = 1; } // النسخة التلقائية اليومية شغالة من الأول
     S.view = Object.assign(blank().view, S.view || {});
     S.notes = S.notes || {}; S.reviewed = S.reviewed || {};
@@ -258,6 +264,10 @@
     if (r.overtime) out.push(h('span', { class: 'flag g' }, 'زيادة ' + D(r.overtime)));
     if (r.permLate) out.push(h('span', { class: 'flag v' }, 'تأخير بإذن'));
     if (r.permEarly) out.push(h('span', { class: 'flag v' }, 'انصراف بإذن'));
+    if (r.short) out.push(h('span', { class: 'flag r' }, 'نقص ' + D(r.short)));
+    if (r.permShort) out.push(h('span', { class: 'flag v' }, 'نقص بإذن'));
+    if (r.missedPeriods) out.push(h('span', { class: 'flag a' }, 'فترة ناقصة'));
+    if (r.rule) out.push(h('span', { class: 'flag n' }, r.rule));
     if (r.code === 'missing') out.push(h('span', { class: 'flag a' }, `ناقص ${r.missingField === 'in' ? 'الحضور' : 'الانصراف'}`));
     if (r.code === 'working' && r.late) out.push(h('span', { class: 'flag r' }, 'تأخير ' + D(r.late)));
     const n = (S.notes[k] || []).length; if (n) out.push(h('span', { class: 'flag n' }, '📝 ' + n));
@@ -265,7 +275,11 @@
   }
   function rowSub(r) {
     if (r.code === 'working') return [r.shift, `حضر ${C(r.in)}`, `بقاله ${D(r.nowMin - r.in)}`].filter(Boolean).join(' · ');
-    if (r.in != null || r.out != null) return [r.shift, `${C(r.in) || '—'} ← ${C(r.out) || '—'}`, r.worked != null ? D(r.worked) + ' س' : null].filter(Boolean).join(' · ');
+    if (r.in != null || r.out != null) {
+      const times = (r.segs && r.segs.length > 1 ? r.segs : [{ in: r.in, out: r.out }]).map(x => `${C(x.in) || '—'} ← ${C(x.out) || '—'}`).join(' ، ');
+      const hrs = r.worked != null ? (r.mode === 'hours' && r.required ? `${D(r.worked)} من ${D(r.required)}` : D(r.worked) + ' س') : null;
+      return [r.shift, times, hrs].filter(Boolean).join(' · ');
+    }
     if (r.code === 'pending') return r.date < (S.settings.deviceFrom || '') ? 'قبل تشغيل الجهاز — سجّل يدوي' : 'مفيش بصمات من الجهاز';
     return r.status;
   }
@@ -289,12 +303,16 @@
   /* ---------- الخط الزمني (الوقت ماشي من اليمين للشمال) ---------- */
   function timeline(rows, future) {
     const sh = S.settings.shifts.map(s => ({ st: E.hm(s.start), en: E.hm(s.end) <= E.hm(s.start) ? E.hm(s.end) + 1440 : E.hm(s.end) }));
-    const winOf = (e, r) => {
-      const s = S.settings.shifts.find(x => x.id === r.shiftId) || (r.code === 'pending' || r.code === 'absent' || r.code === 'excused' || r.code === 'leave' ? usualShift(e.id) : null);
-      if (!s) return null; const st = E.hm(s.start), hrs = E.hoursOf(S.employees[e.id]);
-      let en = hrs ? st + hrs : E.hm(s.end); if (en <= st) en += 1440; return { st, en };
+    const allSh = E.shiftsOf(S.settings);
+    const winsOf = (e, r) => { // فترات الشيفت المطلوبة لليوم ده
+      if (r.mode === 'hours') return [];
+      if (r.periods) return r.periods;
+      const rule = E.ruleFor(S.settings, r.date), s0 = (rule && allSh.find(x => x.id === rule.shift)) || allSh.find(x => x.id === r.shiftId) || (['pending', 'absent', 'excused', 'leave'].includes(r.code) ? allSh.find(x => x.id === usualShift(e.id).id) : null);
+      if (!s0) return []; const per = s0.periods.map(p => ({ ...p })), hrs = E.hoursOf(S.employees[e.id]);
+      if (per.length === 1 && hrs) per[0].en = per[0].st + hrs; return per;
     };
     let lo = Math.min(...sh.map(s => s.st)), hi = Math.max(...sh.map(s => s.en));
+    for (const { e, r } of rows) for (const p of winsOf(e, r)) { lo = Math.min(lo, p.st); hi = Math.max(hi, p.en); }
     for (const { r } of rows) { if (r.in != null) lo = Math.min(lo, r.in); if (r.out != null) hi = Math.max(hi, r.out); if (r.nowMin) hi = Math.max(hi, Math.min(r.nowMin, lo + 20 * 60)); }
     const t0 = Math.floor((lo - 30) / 60) * 60, t1 = Math.ceil((hi + 30) / 60) * 60, span = t1 - t0;
     const P = t => ((t - t0) / span * 100).toFixed(2) + '%', W = (a, b) => (Math.max(0, b - a) / span * 100).toFixed(2) + '%';
@@ -303,21 +321,27 @@
     for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) { const hh = Math.floor(t / 60) % 24; ticks.push(h('span', { style: `right:${P(t)}` }, String(hh % 12 || 12))); }
     const head = h('div', { class: 'tl-row tl-head' }, h('span'), h('div', { class: 'tl-track' }, ticks));
     const body = rows.map(({ e, r }) => {
-      const w = winOf(e, r), parts = [], need = !future && (r.code === 'pending' || r.code === 'missing');
-      if (w) parts.push(seg('win' + (need ? ' warn' : r.code === 'absent' ? ' bad' : ''), w.st, w.en));
+      const ws = winsOf(e, r), w = ws.length ? { st: ws[0].st, en: ws[ws.length - 1].en } : null, parts = [], need = !future && (r.code === 'pending' || r.code === 'missing');
+      for (const p of ws) parts.push(seg('win' + (need ? ' warn' : r.code === 'absent' ? ' bad' : ''), p.st, p.en));
       if (r.in != null && r.out != null) {
-        parts.push(seg('on', r.in, r.out));
-        if (w && r.late) parts.push(seg('late', w.st, r.in));
-        if (w && r.permLate && r.lateExcused) parts.push(seg('perm', w.st, r.in));
-        if (w && r.early) parts.push(seg('late', r.out, w.en));
-        if (w && r.permEarly && r.earlyExcused) parts.push(seg('perm', r.out, w.en));
-        if (w && r.overtime) parts.push(seg('ot', w.en, r.out));
+        const segs = (r.segs || []).filter(x => x.in != null && x.out != null);
+        for (const x of segs.length ? segs : [{ in: r.in, out: r.out }]) parts.push(seg('on', x.in, x.out));
+        // التأخير والبدري والزيادة لكل فترة
+        for (const p of ws) {
+          let best = null, bo = 0; for (const x of segs) { const o = Math.min(x.out, p.en) - Math.max(x.in, p.st); if (o > bo) { bo = o; best = x; } }
+          if (!best) { if (r.early || r.earlyExcused) parts.push(seg(r.permEarly ? 'perm' : 'late', p.st, p.en)); continue; }
+          if (best.in > p.st && (r.late || r.lateExcused)) parts.push(seg(r.permLate ? 'perm' : 'late', p.st, best.in));
+          if (best.out < p.en && (r.early || r.earlyExcused)) parts.push(seg(r.permEarly ? 'perm' : 'late', best.out, p.en));
+          if (best.out > p.en && r.overtime) parts.push(seg('ot', p.en, best.out));
+        }
+        if (!ws.length && r.overtime && r.required) { const last = segs[segs.length - 1] || { out: r.out }; parts.push(seg('ot', last.out - r.overtime, last.out)); }
       } else if (r.code === 'working') { parts.push(seg('on', r.in, Math.min(r.nowMin, t1))); if (w && r.late) parts.push(seg('late', w.st, r.in)); parts.push(seg('now', Math.min(r.nowMin, t1) - 2, Math.min(r.nowMin, t1))); }
       else if (r.in != null) parts.push(seg('on fade-l', r.in, Math.min(r.in + 150, t1)));
       else if (r.out != null) parts.push(seg('on fade-r', Math.max(r.out - 150, t0), r.out));
       else if (['absent', 'excused', 'leave', 'off'].includes(r.code)) parts.push(h('em', { class: 'tl-lbl c-' + r.code }, r.status));
       else if (!future) parts.push(h('em', { class: 'tl-lbl c-pending' }, 'مستني تسجيلك'));
-      const sub = r.worked != null ? [D(r.worked), r.overtime ? '+' + D(r.overtime) : null, r.late || r.early ? '−' + D((r.late || 0) + (r.early || 0)) : null].filter(Boolean).join(' · ') : statusLabel(r, future);
+      const minus = (r.late || 0) + (r.early || 0) + (r.short || 0);
+      const sub = r.worked != null ? [D(r.worked), r.overtime ? '+' + D(r.overtime) : null, minus ? '−' + D(minus) : null].filter(Boolean).join(' · ') : statusLabel(r, future);
       return h('div', { class: 'tl-row' + (need ? ' need' : ''), role: 'button', tabindex: 0, onclick: () => openEditor(e.id, r.date) },
         h('div', { class: 'tl-name' }, h('b', { dir: 'auto' }, e.name), h('small', null, sub)), h('div', { class: 'tl-track' }, parts));
     });
@@ -347,7 +371,13 @@
         h('input', { type: 'time', value: C(val), class: man[f] ? 'edited' : '', 'aria-label': l, onchange: ev => { const v = ev.target.value; setManual(id, date, { [f]: v && v !== C(dev) ? v : null, absence: null }); upd(); } }),
         man[f] && dev != null ? h('div', { class: 'dev' }, `الجهاز: ${C(dev)}`) : null);
       body.push(h('div', { class: 'times' }, ti('in', r.in, r.devIn, 'الحضور'), ti('out', r.out, r.devOut, 'الانصراف')));
-      if (r.worked != null) body.push(h('div', { class: 'stats' },
+      if (r.segs && r.segs.length > 1) body.push(h('div', { class: 'muted', style: 'margin-top:6px;font-size:12.5px' }, 'الفترات: ' + r.segs.map(x => `${C(x.in) || '—'} ← ${C(x.out) || '—'}`).join(' ، ')));
+      if (r.worked != null && r.mode === 'hours') body.push(h('div', { class: 'stats' },
+        h('div', { class: 'stat' }, h('b', null, D(r.worked)), h('span', null, 'ساعات')),
+        h('div', { class: 'stat' }, h('b', null, D(r.required)), h('span', null, 'المطلوب')),
+        h('div', { class: 'stat' + (r.short ? ' bad' : '') }, h('b', null, D(r.short)), h('span', null, 'نقص')),
+        h('div', { class: 'stat' + (r.overtime ? ' good' : '') }, h('b', null, D(r.overtime)), h('span', null, 'زيادة'))));
+      else if (r.worked != null) body.push(h('div', { class: 'stats' },
         h('div', { class: 'stat' }, h('b', null, D(r.worked)), h('span', null, 'ساعات')),
         h('div', { class: 'stat' + (r.late ? ' bad' : '') }, h('b', null, D(r.late)), h('span', null, 'تأخير')),
         h('div', { class: 'stat' + (r.early ? ' bad' : '') }, h('b', null, D(r.early)), h('span', null, 'بدري')),
@@ -356,14 +386,14 @@
       const shiftSel = h('select', { 'aria-label': 'الشيفت', onchange: ev => { setManual(id, date, { shift: ev.target.value || null }); upd(); } },
         h('option', { value: '' }, 'شيفت تلقائي' + (r.shift && !man.shift ? ` (${r.shift})` : '')), ...S.settings.shifts.map(s => h('option', { value: s.id }, `${s.name} ${s.start}–${s.end}`)));
       shiftSel.value = man.shift || '';
-      body.push(h('div', { class: 'row-tools' }, shiftSel, r.in == null || r.out == null ? h('button', { class: 'btn ghost sm', onclick: () => {
+      if (r.mode !== 'hours') body.push(h('div', { class: 'row-tools' }, shiftSel, r.in == null || r.out == null ? h('button', { class: 'btn ghost sm', onclick: () => {
         const t = shiftTimes(id, S.settings.shifts.find(x => x.id === man.shift) || usualShift(id));
         setManual(id, date, { in: r.in == null ? t.start : man.in, out: r.out == null ? t.end : man.out }); upd();
       } }, 'املا بمواعيد الشيفت') : null));
       const tg = (f, l) => h('button', { class: 'tg' + (perm[f] ? ' on' : ''), onclick: () => {
-        const p = Object.assign({}, S.perms[k] || {}, { [f]: !perm[f] }); if (p.late || p.early) S.perms[k] = p; else delete S.perms[k]; upd();
+        const p = Object.assign({}, S.perms[k] || {}, { [f]: !perm[f] }); if (p.late || p.early || p.short) S.perms[k] = p; else delete S.perms[k]; upd();
       } }, (perm[f] ? '✓ ' : '+ ') + l);
-      body.push(h('div', { class: 'toggles' }, tg('late', 'تأخير بإذن'), tg('early', 'انصراف بدري بإذن')));
+      body.push(h('div', { class: 'toggles' }, r.mode === 'hours' ? tg('short', 'نقص ساعات بإذن') : [tg('late', 'تأخير بإذن'), tg('early', 'انصراف بدري بإذن')]));
     }
     const notes = S.notes[k] || [];
     const devLine = r.punches ? `الجهاز: ${C(r.devIn) || '—'} ← ${C(r.devOut) || '—'}` : (date < (S.settings.deviceFrom || '') ? 'قبل تشغيل الجهاز' : 'مفيش بصمات من الجهاز');
@@ -406,7 +436,7 @@
         const fut = k > today; let cls = 'gc', style = '', label = '';
         if (fut) cls += r.code === 'pending' ? ' g-fut' : ' c-' + r.code;
         else if (gm === 'status') cls += ' gs-' + r.code;
-        else if (gm === 'late') { const v = (r.late || 0) + (r.early || 0); if (r.code === 'off') cls += ' gs-off'; else if (r.code === 'pending' || r.code === 'missing') cls += ' gs-pending'; else if (v) { style = `background:rgba(194,72,95,${Math.min(1, .3 + v / 60 * .7).toFixed(2)})`; label = String(v); } else cls += ' g-zero'; }
+        else if (gm === 'late') { const v = (r.late || 0) + (r.early || 0) + (r.short || 0); if (r.code === 'off') cls += ' gs-off'; else if (r.code === 'pending' || r.code === 'missing') cls += ' gs-pending'; else if (v) { style = `background:rgba(194,72,95,${Math.min(1, .3 + v / 60 * .7).toFixed(2)})`; label = String(v); } else cls += ' g-zero'; }
         else { if (r.code === 'off') cls += ' gs-off'; else if (r.code === 'pending' || r.code === 'missing') cls += ' gs-pending'; else if (r.worked) { const req = r.required || 480; style = `background:rgba(30,140,110,${Math.min(1, .2 + r.worked / req * .8).toFixed(2)})`; label = String(Math.round(r.worked / 60)); } else cls += ' g-zero'; }
         if (sel) cls += ' sel';
         cells.push(h('button', { class: cls, style, title: `${e.name} — ${longDate(k)}: ${r.status}`, onclick: () => { UI.gridSel = { id: e.id, date: k }; render(); } }, label));
@@ -442,6 +472,7 @@
       else if (r.code === 'missing') out.push({ e, r, kind: 'missing' });
       if (r.late > 0 && !S.reviewed[k + '|late']) out.push({ e, r, kind: 'late' });
       if (r.early > 0 && !S.reviewed[k + '|early']) out.push({ e, r, kind: 'early' });
+      if (r.short > 0 && !S.reviewed[k + '|short']) out.push({ e, r, kind: 'short' });
     }
     return out.sort((a, b) => a.r.date.localeCompare(b.r.date) || a.e.id.localeCompare(b.e.id, undefined, { numeric: true }));
   }
@@ -478,6 +509,11 @@
         actions = h('div', null, h('div', { style: 'max-width:200px;margin:0 auto 10px' }, inp),
           h('div', { class: 'cf-grid' }, big('حفظ الوقت', 'teal', () => { setManual(e.id, r.date, { [f]: inp.value || (f === 'in' ? t.start : t.end) }); withNote('note'); }),
             big('غياب', 'rose', () => { setManual(e.id, r.date, { absence: 'absent', in: null, out: null }); withNote('absent'); })));
+      } else if (it.kind === 'short') {
+        msg = [h('div', { class: 'cf-msg' }, 'اشتغل ', h('b', null, D(r.worked)), ' من ', h('b', null, D(r.required))), h('div', { class: 'muted' }, `نقص ${D(r.short)} · ${C(r.in)} ← ${C(r.out)}`)];
+        actions = h('div', { class: 'cf-grid' },
+          big('بإذن', 'violet', () => { S.perms[k] = Object.assign({}, S.perms[k] || {}, { short: true }); withNote('short'); }),
+          big('بدون إذن', 'rose', () => { S.reviewed[k + '|short'] = 1; withNote('note'); }));
       } else {
         const late = it.kind === 'late';
         msg = [h('div', { class: 'cf-msg' }, late ? 'اتأخر ' : 'مشي ', h('b', { style: 'color:var(--rose)' }, D(late ? r.late : r.early) + (late ? '' : ' بدري'))),
@@ -559,7 +595,7 @@
     kids.push(h('div', { class: 'totals' },
       h('div', { class: 'total' }, h('b', null, D(tot('worked')).split(':')[0]), h('span', null, 'ساعة شغل')),
       h('div', { class: 'total' }, h('b', { style: 'color:var(--rose)' }, tot('absent')), h('span', null, 'يوم غياب')),
-      h('div', { class: 'total' }, h('b', { style: 'color:var(--rose)' }, D(tot('late'))), h('span', null, 'تأخير')),
+      h('div', { class: 'total' }, h('b', { style: 'color:var(--rose)' }, D(tot('late') + tot('short'))), h('span', null, tot('short') ? 'تأخير/نقص' : 'تأخير')),
       h('div', { class: 'total' }, h('b', { style: 'color:var(--green)' }, D(tot('overtime'))), h('span', null, 'زيادة'))));
     const tab = (t, l) => h('button', { class: v.type === t ? 'on' : '', onclick: () => { v.type = t; save(); render(); } }, l);
     const canX = v.type === 'summary' || v.type === 'detail';
@@ -579,7 +615,7 @@
       sorted.map(e => { const s = e.summary; return h('button', { class: 'st-row', onclick: () => { S.view.emp = e.id; S.view.type = 'detail'; save(); render(); window.scrollTo(0, 0); } },
         h('span', { class: 'st-n' }, h('b', { dir: 'auto' }, e.name), s.pending + s.missing ? h('small', { style: 'color:var(--amber-ink)' }, `مستني ${s.pending + s.missing}`) : h('small', null, `حضور ${s.present + s.offwork} يوم`)),
         h('span', { class: 'st-h2' }, h('i', { style: `width:${(s.worked / max * 100).toFixed(0)}%` }), D(s.worked)),
-        h('span', { class: s.late ? 'bad' : 'mut' }, D(s.late)), h('span', { class: s.absent ? 'bad' : 'mut' }, s.absent), h('span', { class: s.overtime ? 'good' : 'mut' }, D(s.overtime))); }));
+        h('span', { class: s.late + s.short ? 'bad' : 'mut' }, D(s.late + s.short)), h('span', { class: s.absent ? 'bad' : 'mut' }, s.absent), h('span', { class: s.overtime ? 'good' : 'mut' }, D(s.overtime))); }));
   }
 
   /* ======================= البحث ======================= */
@@ -649,7 +685,7 @@
       navBar(monthLabel(m), '', 'month', m, v => { UI.pmonth = v; UI.pday = ''; render(); }, () => shiftM(-1), () => shiftM(1))];
     if (!res || !res.rows.length) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, rng.future ? 'الشهر ده لسه مجاش' : 'مكنش شغال الشهر ده')); return; }
     const past = res.rows.filter(r => r.date <= today), s = { worked: 0, absent: 0, late: 0, overtime: 0 };
-    for (const r of past) { s.worked += r.worked || 0; s.absent += r.code === 'absent' ? 1 : 0; s.late += r.late || 0; s.overtime += r.overtime || 0; }
+    for (const r of past) { s.worked += r.worked || 0; s.absent += r.code === 'absent' ? 1 : 0; s.late += (r.late || 0) + (r.short || 0); s.overtime += r.overtime || 0; }
     kids.push(h('div', { class: 'totals' },
       h('div', { class: 'total' }, h('b', null, D(s.worked)), h('span', null, 'ساعات')),
       h('div', { class: 'total' }, h('b', { style: 'color:var(--rose)' }, s.absent), h('span', null, 'غياب')),
@@ -790,7 +826,7 @@
     const s = e.summary, td = (v, cls) => h('td', { class: cls || null }, v || '');
     const body = e.rows.map(r => h('tr', { onclick: () => goDay(r.date, e.id) },
       td(`${E.DAY_NAMES[r.weekday]} ${+r.date.slice(8)}`), h('td', null, h('span', { class: 'pill c-' + r.code }, r.status)),
-      td(C(r.in)), td(C(r.out)), td(D(r.worked)), td(r.late ? D(r.late) : '', 'bad'), td(r.early ? D(r.early) : '', 'bad'), td(r.overtime ? D(r.overtime) : '', 'good'),
+      td(C(r.in)), td(C(r.out)), td(D(r.worked)), td(r.late ? D(r.late) : r.short ? 'نقص ' + D(r.short) : '', 'bad'), td(r.early ? D(r.early) : '', 'bad'), td(r.overtime ? D(r.overtime) : '', 'good'),
       td(r.shift), td([r.lateExcused ? 'تأخير ' + D(r.lateExcused) : '', r.earlyExcused ? 'بدري ' + D(r.earlyExcused) : ''].filter(Boolean).join(' · ')),
       h('td', { class: 'note-td', dir: 'auto' }, notesText(e.id, r.date))));
     const tot = h('tr', { class: 'tot' }, h('td', { colspan: 2 }, 'الإجمالي'), td(''), td(''), td(D(s.worked)), td(D(s.late)), td(D(s.early)), td(D(s.overtime)), td(''),
@@ -807,22 +843,22 @@
     const title = `${isSum ? 'تقرير شامل' : 'تقرير مفصّل'} — ${single ? list[0].name : 'كل الموظفين'} — ${rng.custom ? `من ${fmtDate(rng.from)} إلى ${fmtDate(rng.to)}` : `${rng.label} (من ${fmtDate(rng.from)} إلى ${fmtDate(rng.to)})`}`;
     const aoa = [[txt(title)], []]; let widths;
     if (isSum) {
-      const head = ['الكود', 'الاسم', 'يوم الإجازة', 'الساعات المطلوبة', 'أيام الحضور', 'أيام الغياب', 'غياب بإذن', 'إجازة', 'إجازة أسبوعية', 'شغل يوم إجازة', 'مستني تسجيل', 'ساعات العمل', 'التأخير', 'أيام التأخير', 'تأخير بإذن', 'انصراف بدري', 'أيام الانصراف بدري', 'انصراف بدري بإذن', 'الزيادة'];
+      const head = ['الكود', 'الاسم', 'يوم الإجازة', 'الساعات المطلوبة', 'أيام الحضور', 'أيام الغياب', 'غياب بإذن', 'إجازة', 'إجازة أسبوعية', 'شغل يوم إجازة', 'مستني تسجيل', 'ساعات العمل', 'التأخير', 'أيام التأخير', 'تأخير بإذن', 'انصراف بدري', 'أيام الانصراف بدري', 'انصراف بدري بإذن', 'نقص ساعات', 'نقص بإذن', 'الزيادة'];
       aoa.push(head.map(txt));
-      for (const e of list) { const s = e.summary; aoa.push([txt(e.id), txt(e.name), txt(e.offDay), dur(s.required), num(s.present + s.offwork), num(s.absent), num(s.excused), num(s.leave), num(s.off), num(s.offwork), num(s.pending + s.missing), dur(s.worked), dur(s.late), num(s.lateDays), dur(s.lateExcused), dur(s.early), num(s.earlyDays), dur(s.earlyExcused), dur(s.overtime)]); }
-      widths = [8, 24, 11, 14, 11, 11, 10, 8, 13, 13, 12, 12, 10, 11, 11, 12, 16, 16, 10];
+      for (const e of list) { const s = e.summary; aoa.push([txt(e.id), txt(e.name), txt(e.offDay), dur(s.required), num(s.present + s.offwork), num(s.absent), num(s.excused), num(s.leave), num(s.off), num(s.offwork), num(s.pending + s.missing), dur(s.worked), dur(s.late), num(s.lateDays), dur(s.lateExcused), dur(s.early), num(s.earlyDays), dur(s.earlyExcused), dur(s.short), dur(s.shortExcused), dur(s.overtime)]); }
+      widths = [8, 24, 11, 14, 11, 11, 10, 8, 13, 13, 12, 12, 10, 11, 11, 12, 16, 16, 11, 10, 10];
     } else {
-      aoa.push(['الكود', 'الاسم', 'التاريخ', 'اليوم', 'الشيفت', 'الحضور', 'الانصراف', 'ساعات العمل', 'التأخير', 'تأخير بإذن', 'انصراف بدري', 'انصراف بإذن', 'الزيادة', 'الحالة', 'ملاحظات'].map(txt));
+      aoa.push(['الكود', 'الاسم', 'التاريخ', 'اليوم', 'الشيفت', 'الحضور', 'الانصراف', 'ساعات العمل', 'التأخير', 'تأخير بإذن', 'انصراف بدري', 'انصراف بإذن', 'نقص ساعات', 'الزيادة', 'الحالة', 'ملاحظات'].map(txt));
       for (const e of list) {
         for (const x of e.rows) aoa.push([txt(e.id), txt(e.name), txt(fmtDate(x.date)), txt(x.dayName), txt(x.shift), txt(C(x.in)), txt(C(x.out)),
           x.worked == null ? txt('') : dur(x.worked), x.late ? dur(x.late) : txt(''), x.lateExcused ? dur(x.lateExcused) : txt(''),
-          x.early ? dur(x.early) : txt(''), x.earlyExcused ? dur(x.earlyExcused) : txt(''), x.overtime ? dur(x.overtime) : txt(''), txt(x.status), txt(notesText(e.id, x.date))]);
+          x.early ? dur(x.early) : txt(''), x.earlyExcused ? dur(x.earlyExcused) : txt(''), x.short ? dur(x.short) : txt(''), x.overtime ? dur(x.overtime) : txt(''), txt(x.status), txt(notesText(e.id, x.date))]);
         const s = e.summary;
         aoa.push([txt(''), txt(`إجمالي ${e.name}`), txt(''), txt(''), txt(''), txt(''), txt(''), dur(s.worked), dur(s.late), dur(s.lateExcused), dur(s.early), dur(s.earlyExcused), dur(s.overtime),
           txt(`حضور ${s.present + s.offwork} · غياب ${s.absent} · غياب بإذن ${s.excused} · إجازة ${s.leave + s.off}${s.pending + s.missing ? ' · مستني تسجيل ' + (s.pending + s.missing) : ''}`)]);
         aoa.push([]);
       }
-      widths = [8, 22, 12, 10, 9, 9, 9, 11, 9, 11, 11, 12, 9, 20, 40];
+      widths = [8, 22, 12, 10, 9, 9, 9, 11, 9, 11, 11, 12, 10, 9, 20, 40];
     }
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     ws['!cols'] = widths.map(w => ({ wch: w }));
@@ -839,7 +875,7 @@
   const QTYPES = [
     { v: 'late', label: 'تأخير بإذن' }, { v: 'early', label: 'انصراف بدري بإذن' },
     { v: 'excused', label: 'غياب بإذن' }, { v: 'absent', label: 'غياب بدون إذن' },
-    { v: 'leave', label: 'إجازة' }, { v: 'note', label: 'ملاحظة بس' }];
+    { v: 'leave', label: 'إجازة' }, { v: 'short', label: 'نقص ساعات بإذن' }, { v: 'note', label: 'ملاحظة بس' }];
   const QLABEL = Object.fromEntries(QTYPES.map(t => [t.v, t.label]));
   /** اليوم الافتراضي: بعد 12 بالليل ولحد آخر اليوم (5 الفجر) يبقى اليوم اللي لسه خالص */
   function defaultQuickDate() { const h = new Date().getHours(); return h < (S.settings.dayCutHour ?? 5) ? addDays(todayKey(), -1) : todayKey(); }
@@ -881,7 +917,7 @@
   }
   function applyQuick(id, date, type, text) {
     const k = id + '|' + date;
-    if (type === 'late' || type === 'early') { S.perms[k] = Object.assign({}, S.perms[k] || {}, { [type]: true }); delete (S.reviewed || {})[k + '|' + type]; }
+    if (type === 'late' || type === 'early' || type === 'short') { S.perms[k] = Object.assign({}, S.perms[k] || {}, { [type]: true }); delete (S.reviewed || {})[k + '|' + type]; }
     else if (type === 'excused' || type === 'absent' || type === 'leave') { setManual(id, date, { absence: type, in: null, out: null }); UI.openPresent.delete(k); }
     if (text) (S.notes[k] = S.notes[k] || []).push({ text, type, at: new Date().toISOString() });
   }
@@ -894,6 +930,7 @@
       const k = e.id + '|' + r.date;
       if (r.late > 0 && !S.reviewed[k + '|late']) out.push({ e, r, kind: 'late', amount: r.late });
       if (r.early > 0 && !S.reviewed[k + '|early']) out.push({ e, r, kind: 'early', amount: r.early });
+      if (r.short > 0 && !S.reviewed[k + '|short']) out.push({ e, r, kind: 'short', amount: r.short });
     }
     return out.sort((a, b) => a.r.date.localeCompare(b.r.date) || a.e.id.localeCompare(b.e.id, undefined, { numeric: true }));
   }
@@ -907,7 +944,7 @@
         h('h2', null, 'مراجعة سريعة'),
         h('p', { class: 'muted', style: 'margin:-6px 0 10px' }, `${items.length} حالة تأخير أو انصراف بدري ملهاش إذن متسجّل. افتكر وعلّم على كل واحدة:`),
         h('div', { class: 'rv-list' }, items.map(it => h('div', { class: 'rv' },
-          h('div', null, h('b', { dir: 'auto' }, it.e.name), h('div', { class: 'muted' }, `${longDate(it.r.date)} — ${it.kind === 'late' ? `تأخير ${D(it.amount)} (حضر ${C(it.r.in)})` : `انصراف بدري ${D(it.amount)} (مشي ${C(it.r.out)})`}`)),
+          h('div', null, h('b', { dir: 'auto' }, it.e.name), h('div', { class: 'muted' }, `${longDate(it.r.date)} — ${it.kind === 'late' ? `تأخير ${D(it.amount)} (حضر ${C(it.r.in)})` : it.kind === 'short' ? `نقص ساعات ${D(it.amount)} (اشتغل ${D(it.r.worked)})` : `انصراف بدري ${D(it.amount)} (مشي ${C(it.r.out)})`}`)),
           h('div', { class: 'rv-btns' }, h('button', { class: 'btn sm', style: 'color:var(--violet)', onclick: () => mark(it, true) }, 'بإذن'), h('button', { class: 'btn sm danger', onclick: () => mark(it, false) }, 'بدون إذن'))))),
         h('div', { class: 'btns', style: 'margin-top:12px' },
           h('button', { class: 'btn danger', style: 'flex:1', onclick: ev => confirmBtn(ev.currentTarget, 'متأكد؟ اضغط تاني', () => { for (const it of items) S.reviewed[it.e.id + '|' + it.r.date + '|' + it.kind] = 1; save(); draw(); }) }, 'الباقي كله بدون إذن'),
@@ -926,6 +963,7 @@
       if (r.code === 'leave') tags.push(['leave', 'إجازة']);
       if (r.permLate) tags.push(['excused', 'تأخير بإذن' + (r.lateExcused ? ' ' + D(r.lateExcused) : '')]);
       if (r.permEarly) tags.push(['excused', 'انصراف بإذن' + (r.earlyExcused ? ' ' + D(r.earlyExcused) : '')]);
+      if (r.permShort) tags.push(['excused', 'نقص بإذن' + (r.shortExcused ? ' ' + D(r.shortExcused) : '')]);
       if (tags.length || notes.length) out.push({ e, r, tags, notes });
     }
     return out.sort((a, b) => b.r.date.localeCompare(a.r.date));
@@ -981,22 +1019,28 @@
     const idIn = h('input', { inputmode: 'numeric', value: isNew ? '' : id, disabled: !isNew, placeholder: 'نفس الكود المتسجّل في جهاز البصمة' });
     const nameIn = h('input', { dir: 'auto', value: e.name || (isNew ? '' : S.names[id] || '') });
     const offIn = h('select', null, h('option', { value: '' }, '— مش متحدد —'), E.DAY_NAMES.map((n, i) => h('option', { value: String(i) }, n))); offIn.value = e.off == null ? '' : String(e.off);
-    const shIn = h('select', null, h('option', { value: '' }, 'تلقائي (حسب البصمة)'), S.settings.shifts.map(s => h('option', { value: s.id }, `${s.name} ${s.start}–${s.end}`))); shIn.value = e.shift || '';
-    const hrIn = h('input', { type: 'number', min: 1, max: 23, step: 0.5, inputmode: 'decimal', value: e.hours || '', placeholder: 'حسب الشيفت (8)' });
+    const shIn = h('select', null, h('option', { value: '' }, 'تلقائي (حسب البصمة)'), S.settings.shifts.filter(s => !s.ruleOnly).map(s => h('option', { value: s.id }, `${s.name} ${s.start}–${s.end}`))); shIn.value = e.shift || '';
+    const hrIn = h('input', { type: 'number', min: 0.5, max: 23, step: 0.5, inputmode: 'decimal', value: e.hours || '', placeholder: 'حسب الشيفت (8)' });
+    const modeIn = h('select', null, h('option', { value: 'shift' }, 'بشيفت (مواعيد)'), h('option', { value: 'hours' }, 'ساعات بس (من غير مواعيد)')); modeIn.value = e.mode === 'hours' ? 'hours' : 'shift';
+    const shWrap = h('div'), hrLbl = h('label', { class: 'f' }), hrHelp = h('div', { class: 'muted', style: 'align-self:center;font-size:12.5px' });
+    const syncMode = () => { const hm2 = modeIn.value === 'hours'; shWrap.hidden = hm2; hrLbl.textContent = hm2 ? 'عدد الساعات المطلوبة في اليوم' : 'ساعات العمل في اليوم (اختياري)'; hrIn.placeholder = hm2 ? 'مثلًا 2 أو 8' : 'حسب الشيفت (8)'; hrHelp.textContent = hm2 ? `ييجي وقت ما ييجي. أقل من الساعات = نقص (بعد سماح ${S.settings.hoursGrace ?? 10} دقايق)، وأكتر = زيادة. مفيش تأخير ولا انصراف بدري.` : 'الانصراف المطلوب = بداية الشيفت + الساعات دي. سيبها فاضية تبقى حسب الشيفت.'; };
+    modeIn.addEventListener('change', syncMode);
     const stIn = h('input', { type: 'date', value: e.start || '' }), enIn = h('input', { type: 'date', value: e.end || '' });
     const msg = h('div');
     const saveBtn = h('button', { class: 'btn primary', style: 'flex:1', onclick: () => {
       const nid = isNew ? idIn.value.trim() : id;
       if (!nid) { idIn.focus(); return; }
       if (isNew && S.employees[nid]) { msg.replaceChildren(h('div', { class: 'warn-line' }, `الكود ${nid} متسجّل قبل كده باسم ${empName(nid)}`)); return; }
+      if (modeIn.value === 'hours' && !(+hrIn.value > 0)) { msg.replaceChildren(h('div', { class: 'warn-line' }, 'اكتب عدد الساعات المطلوبة')); hrIn.focus(); return; }
       if (isNew) delete S.removed[nid];
-      S.employees[nid] = Object.assign(S.employees[nid] || {}, { name: nameIn.value.trim(), off: offIn.value, shift: shIn.value, hours: hrIn.value && +hrIn.value > 0 ? String(+hrIn.value) : '', start: stIn.value, end: enIn.value });
+      S.employees[nid] = Object.assign(S.employees[nid] || {}, { name: nameIn.value.trim(), off: offIn.value, mode: modeIn.value, shift: modeIn.value === 'hours' ? '' : shIn.value, hours: hrIn.value && +hrIn.value > 0 ? String(+hrIn.value) : '', start: stIn.value, end: enIn.value });
       save(); $('sheet').close(); toast(isNew ? `اتضاف ${empName(nid)}` : 'اتحفظ'); render();
     } }, isNew ? 'إضافة' : 'حفظ');
     const kids = [h('h2', null, isNew ? 'موظف جديد' : empName(id)),
       h('div', { class: 'grid2' }, f('الكود في الجهاز', idIn), f('الاسم', nameIn)),
-      h('div', { class: 'grid2' }, f('يوم الإجازة الأسبوعية', offIn), f('الشيفت', shIn)),
-      h('div', { class: 'grid2' }, f('ساعات العمل في اليوم', hrIn), h('div', { class: 'muted', style: 'align-self:center;font-size:12.5px' }, 'الانصراف المطلوب = بداية الشيفت + الساعات دي. سيبها فاضية تبقى حسب الشيفت.')),
+      h('div', { class: 'grid2' }, f('يوم الإجازة الأسبوعية', offIn), f('طريقة الحساب', modeIn)),
+      (shWrap.replaceChildren(f('الشيفت', shIn)), shWrap),
+      h('div', { class: 'grid2' }, h('div', { class: 'field' }, hrLbl, hrIn), hrHelp),
       h('div', { class: 'grid2' }, f('بدأ الشغل يوم', stIn), f('ساب الشغل يوم (لو مشي)', enIn)),
       h('p', { class: 'muted', style: 'margin:0 0 12px' }, 'الشيفت "تلقائي" يعني التطبيق بيعرفه من وقت البصمة كل يوم. لو موظف مشي اكتب يوم ما ساب — بيفضل في تقارير الشهور القديمة.'),
       msg, h('div', { class: 'btns' }, saveBtn, h('button', { class: 'btn', onclick: () => $('sheet').close() }, 'إلغاء'))];
@@ -1009,7 +1053,7 @@
         if (S.view.emp === id) S.view.emp = '';
         save(); $('sheet').close(); toast('اتحذف'); render();
       }) }, 'حذف الموظف نهائيًا')));
-    openSheet(kids);
+    openSheet(kids); syncMode();
   }
   function openSheet(kids) { UI.editor = null; $('sheet').classList.remove('full'); $('sheet-in').replaceChildren(...kids); if (!$('sheet').open) $('sheet').showModal(); }
   $('sheet').addEventListener('click', ev => { if (ev.target === $('sheet')) $('sheet').close(); });
@@ -1026,18 +1070,45 @@
       h('div', { class: 'btns', style: 'margin-top:8px' }, h('button', { class: 'btn primary', onclick: () => $('file').click() }, 'رفع ملف الجهاز')),
       S.imports.length ? h('ul', { class: 'file-list' }, S.imports.slice(0, 5).map(i => h('li', null, `${fmtDate(i.at)} — ${i.name} — ${i.count} بصمة جديدة`))) : h('p', { class: 'muted' }, 'لسه مرفعتش ملفات. كل ملف بترفعه بيتجمع مع اللي قبله.'));
 
+    const tIn = (o, f, l) => h('div', null, h('label', { class: 'f' }, l), h('input', { type: 'time', value: o[f] || '', onchange: ev => { o[f] = ev.target.value; save(); } }));
     const shiftCard = h('div', { class: 'card' }, h('h2', null, 'الشيفتات'),
-      ...st.shifts.map((s, i) => h('div', { class: 'shift' },
-        h('div', null, h('label', { class: 'f' }, 'الاسم'), h('input', { value: s.name, onchange: ev => { s.name = ev.target.value; save(); } })),
-        h('div', null, h('label', { class: 'f' }, 'من'), h('input', { type: 'time', value: s.start, onchange: ev => { s.start = ev.target.value; save(); } })),
-        h('div', null, h('label', { class: 'f' }, 'لـ'), h('input', { type: 'time', value: s.end, onchange: ev => { s.end = ev.target.value; save(); } })),
-        h('button', { class: 'btn danger sm', disabled: st.shifts.length <= 1, style: 'min-height:44px', onclick: ev => confirmBtn(ev.currentTarget, 'تاني', () => { st.shifts.splice(i, 1); save(); render(); }) }, 'حذف'))),
+      h('p', { class: 'muted', style: 'margin-top:-4px' }, 'الشيفت "المقسوم" ليه فترتين (زي رمضان). "بالقواعد بس" يعني مش بيتخمّن من البصمة، وبيتطبق بس في الأيام الخاصة.'),
+      ...st.shifts.map((s, i) => h('div', { class: 'shift-box' },
+        h('div', { class: 'shift-top' }, h('input', { value: s.name, 'aria-label': 'اسم الشيفت', onchange: ev => { s.name = ev.target.value; save(); } }),
+          h('button', { class: 'btn danger sm', disabled: st.shifts.length <= 1, onclick: ev => confirmBtn(ev.currentTarget, 'تاني', () => { st.shifts.splice(i, 1); save(); render(); }) }, 'حذف')),
+        h('div', { class: 'grid2' }, tIn(s, 'start', s.start2 ? 'الفترة الأولى من' : 'من'), tIn(s, 'end', 'لـ')),
+        s.start2 != null ? h('div', { class: 'grid2', style: 'margin-top:6px' }, tIn(s, 'start2', 'الفترة التانية من'), tIn(s, 'end2', 'لـ')) : null,
+        h('div', { class: 'chk', style: 'margin-top:8px' },
+          h('label', null, h('input', { type: 'checkbox', checked: s.start2 != null, onchange: ev => { if (ev.target.checked) { s.start2 = s.start2 || '20:00'; s.end2 = s.end2 || '00:00'; } else { delete s.start2; delete s.end2; } save(); render(); } }), 'مقسوم (فترتين)'),
+          h('label', null, h('input', { type: 'checkbox', checked: !!s.ruleOnly, onchange: ev => { s.ruleOnly = ev.target.checked; save(); } }), 'بالقواعد بس')))),
       h('button', { class: 'btn sm', onclick: () => { const ids = new Set(st.shifts.map(s => s.id)); let n = 1; while (ids.has('s' + n)) n++; st.shifts.push({ id: 's' + n, name: 'شيفت ' + (st.shifts.length + 1), start: '08:00', end: '16:00' }); save(); render(); } }, '+ شيفت جديد'));
+
+    st.rules = st.rules || [];
+    const shiftOpts = sel => { const el = h('select', { onchange: ev => sel(ev.target.value) }, st.shifts.map(x => h('option', { value: x.id }, x.name))); return el; };
+    const daysCard = h('div', { class: 'card' }, h('h2', null, 'أيام بمواعيد خاصة'),
+      h('p', { class: 'muted', style: 'margin-top:-4px' }, 'في الأيام دي كل اللي شغالين بشيفت بيتحسبوا على الشيفت ده (مش بيتخمّن). موظفين "ساعات بس" مش بيتأثروا، ويوم الإجازة بيفضل إجازة.'),
+      ...st.rules.map((r, i) => {
+        const kindSel = h('select', { onchange: ev => { r.kind = ev.target.value; save(); render(); } }, h('option', { value: 'weekday' }, 'كل أسبوع'), h('option', { value: 'range' }, 'فترة من يوم لـ يوم'), h('option', { value: 'date' }, 'يوم معيّن')); kindSel.value = r.kind;
+        const wdSel = h('select', { onchange: ev => { r.weekday = +ev.target.value; save(); } }, E.DAY_NAMES.map((n, j) => h('option', { value: String(j) }, n))); wdSel.value = String(r.weekday ?? 5);
+        const shSel = shiftOpts(v => { r.shift = v; save(); }); shSel.value = r.shift;
+        const dIn = (f, l) => h('div', null, h('label', { class: 'f' }, l), h('input', { type: 'date', value: r[f] || '', onchange: ev => { r[f] = ev.target.value; save(); } }));
+        return h('div', { class: 'shift-box' + (r.on === false ? ' off' : '') },
+          h('div', { class: 'shift-top' }, h('input', { value: r.name || '', placeholder: 'اسم (زي الجمعة، رمضان)', 'aria-label': 'اسم القاعدة', onchange: ev => { r.name = ev.target.value; save(); } }),
+            h('label', { class: 'sw' }, h('input', { type: 'checkbox', checked: r.on !== false, onchange: ev => { r.on = ev.target.checked; save(); render(); } }), r.on !== false ? 'شغالة' : 'مقفولة'),
+            h('button', { class: 'btn danger sm', onclick: ev => confirmBtn(ev.currentTarget, 'تاني', () => { st.rules.splice(i, 1); save(); render(); }) }, 'حذف')),
+          h('div', { class: 'grid2' }, h('div', null, h('label', { class: 'f' }, 'امتى'), kindSel), h('div', null, h('label', { class: 'f' }, 'الشيفت'), shSel)),
+          r.kind === 'weekday' ? h('div', { style: 'margin-top:6px' }, h('label', { class: 'f' }, 'اليوم'), wdSel)
+            : r.kind === 'range' ? h('div', { class: 'grid2', style: 'margin-top:6px' }, dIn('from', 'من يوم'), dIn('to', 'لـ يوم'))
+              : h('div', { style: 'margin-top:6px' }, dIn('from', 'اليوم')),
+          r.on !== false && r.kind === 'range' && (!r.from || !r.to) ? h('div', { class: 'warn-line' }, 'حدد من يوم لـ يوم عشان تشتغل') : null);
+      }),
+      h('button', { class: 'btn sm', onclick: () => { st.rules.push({ id: 'r' + Date.now(), name: '', kind: 'weekday', weekday: 5, shift: st.shifts[0].id, on: true }); save(); render(); } }, '+ يوم خاص جديد'));
 
     const rulesCard = h('div', { class: 'card' }, h('h2', null, 'قواعد الحساب'),
       row('فترة السماح في التأخير', 'بالدقايق — جه 10:20 والسماح 15 = 5 دقايق تأخير', numIn('grace', 0, 120)),
       row('البصمة المكررة', 'بصمتين من نفس النوع في أقل من كام دقيقة = بصمة واحدة', numIn('dedupeMinutes', 0, 60)),
       row('آخر اليوم', 'البصمة قبل الساعة دي الفجر تتبع اليوم اللي قبله', numIn('dayCutHour', 0, 12)),
+      row('سماح نقص الساعات', 'لموظفين "ساعات بس" — اشتغل 1:50 من 2 والسماح 10 = مفيش نقص', numIn('hoursGrace', 0, 120)),
       h('p', { class: 'muted', style: 'margin:8px 0 0' }, 'الانصراف بدري بيتحسب من أول دقيقة. الزيادة = الوقت بعد نهاية الشيفت. الشغل يوم الإجازة الأسبوعية كله زيادة.'));
 
     const freqSel = h('select', { onchange: ev => { b.freq = ev.target.value; save(); render(); } }, h('option', { value: 'off' }, 'مقفول'), h('option', { value: 'daily' }, 'كل يوم'), h('option', { value: 'weekly' }, 'كل أسبوع')); freqSel.value = b.freq;
@@ -1077,7 +1148,7 @@
       h('div', { class: 'styles' }, STY.map(x => h('button', { class: 'sty' + ((st.style || 'vivid') === x.v ? ' on' : ''), onclick: () => { st.style = x.v; save(); applyStyle(); render(); toast('اتغيّر شكل التطبيق'); } },
         h('div', { class: 'sty-prev', style: `background:${x.bg}` }, h('div', { class: 'hb', style: `background:${x.hb};${x.v === 'minimal' ? 'border-bottom:1px solid #E9E9E9' : ''}` }), h('div', { class: 'bdy' }, x.t.map(c => h('i', { style: `background:${c};${c === '#fff' || c === '#F3F3F3' ? 'border:1px solid #DDD' : ''}` })))),
         h('b', null, x.l)))));
-    $('tab-settings').replaceChildren(styleCard, dataCard, remindCard, backupCard, shiftCard, rulesCard, dangerCard);
+    $('tab-settings').replaceChildren(styleCard, dataCard, shiftCard, daysCard, rulesCard, remindCard, backupCard, dangerCard);
     if (isNative()) { listAutoBackups(); remindStatus(); }
   }
 

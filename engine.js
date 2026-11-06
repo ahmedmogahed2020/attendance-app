@@ -10,13 +10,20 @@
   const DEFAULT_SETTINGS = {
     grace: 15,           // دقائق السماح في التأخير
     dayCutHour: 5,       // البصمة قبل الساعة 5 الفجر تتبع اليوم السابق
-    deviceFrom: '2026-11-06',
-    style: 'vivid',      // شكل التطبيق: vivid / default / dark / minimal // بصمات الجهاز قبل اليوم ده (فترة التجربة) بتتجاهل
+    deviceFrom: '2026-11-06', // بصمات الجهاز قبل اليوم ده (فترة التجربة) بتتجاهل
+    style: 'vivid',      // شكل التطبيق: vivid / default / dark / minimal
+    hoursGrace: 10,      // سماح نقص الساعات لموظفين "ساعات بس"
     dedupeMinutes: 10,   // بصمتين ورا بعض في أقل من 10 دقايق = بصمة واحدة
     ambiguousMinutes: 120,
     shifts: [
       { id: 'm', name: 'صباحي', start: '10:00', end: '18:00' },
-      { id: 'e', name: 'مسائي', start: '15:00', end: '23:00' }
+      { id: 'e', name: 'مسائي', start: '15:00', end: '23:00' },
+      { id: 'r', name: 'رمضان (مقسوم)', start: '10:00', end: '14:00', start2: '20:00', end2: '00:00', ruleOnly: true }
+    ],
+    // أيام بمواعيد خاصة: يوم في الأسبوع / تاريخ / فترة ← شيفت
+    rules: [
+      { id: 'fri', name: 'الجمعة', kind: 'weekday', weekday: 5, shift: 'e', on: true },
+      { id: 'ram', name: 'رمضان', kind: 'range', from: '', to: '', shift: 'r', on: false }
     ]
   };
 
@@ -199,12 +206,21 @@
   }
 
   /* ---------- الحساب ---------- */
+  /** الشيفت = فترة أو فترتين (مقسوم). st/en بالدقايق من أول اليوم، والنهاية بعد 12 بالليل بتعدّي 1440 */
   function shiftsOf(settings) {
     return (settings.shifts || []).map(s => {
-      const st = hm(s.start), en0 = hm(s.end);
-      const en = en0 <= st ? en0 + 1440 : en0;
-      return { ...s, st, en, len: en - st };
-    }).filter(s => s.st != null && s.en != null);
+      const per = [];
+      const add = (a, b) => { let st = hm(a), en = hm(b); if (st == null || en == null) return; if (per.length && st < per[0].st) st += 1440; while (en <= st) en += 1440; per.push({ st, en }); };
+      add(s.start, s.end); if (s.start2 && s.end2) add(s.start2, s.end2);
+      if (!per.length) return null;
+      return { ...s, periods: per, st: per[0].st, en: per[per.length - 1].en, len: per.reduce((a, p) => a + p.en - p.st, 0), split: per.length > 1 };
+    }).filter(Boolean);
+  }
+  /** القاعدة اللي بتنطبق على يوم (تاريخ/فترة أولوية عن يوم الأسبوع) */
+  function ruleFor(settings, key) {
+    const rules = (settings.rules || []).filter(r => r && r.on !== false && r.shift);
+    const wd = weekday(key);
+    return rules.find(r => r.kind === 'date' && r.from === key) || rules.find(r => r.kind === 'range' && r.from && r.to && r.from <= key && key <= r.to) || rules.find(r => r.kind === 'weekday' && +r.weekday === wd) || null;
   }
 
   /** يجمع البصمات لكل موظف/يوم بعد تطبيق حد اليوم وإزالة التكرار */
@@ -226,12 +242,26 @@
     }
     return map;
   }
-
-  function tinDev(P) { if (!P.length) return null; if (P.some(p => p.type)) { const a = P.filter(p => p.type === 'in'); return a.length ? a[0].t : null; } return P[0].t; }
-  function toutDev(P) { if (!P.length) return null; if (P.some(p => p.type)) { const a = P.filter(p => p.type === 'out'); return a.length ? a[a.length - 1].t : null; } return P.length > 1 ? P[P.length - 1].t : null; }
+  /** يحوّل البصمات لفترات وجود [{in,out}] — حضور يفتح فترة وانصراف يقفلها */
+  function segmentsOf(P) {
+    if (!P.length) return [];
+    if (P.some(p => p.type)) {
+      const segs = []; let cur = null;
+      for (const p of P) {
+        if (p.type === 'in') { if (cur && cur.out == null) continue; cur = { in: p.t, out: null }; segs.push(cur); }
+        else if (p.type === 'out') { if (cur) { if (cur.in != null && p.t <= cur.in) continue; cur.out = p.t; } else { cur = { in: null, out: p.t }; segs.push(cur); } } // انصراف ورا انصراف = آخر واحد
+      }
+      return segs;
+    }
+    if (P.length >= 4 && P.length % 2 === 0) { const segs = []; for (let i = 0; i < P.length; i += 2) segs.push({ in: P[i].t, out: P[i + 1].t }); return segs; }
+    return P.length === 1 ? [{ in: P[0].t, out: null, lone: true }] : [{ in: P[0].t, out: P[P.length - 1].t }];
+  }
+  function tinDev(P) { const s = segmentsOf(P); return s.length ? s[0].in : null; }
+  function toutDev(P) { const s = segmentsOf(P); return s.length ? s[s.length - 1].out : null; }
 
   /** ساعات الموظف بالدقايق (0 = حسب الشيفت) */
   function hoursOf(emp) { const h = parseFloat(emp && emp.hours); return h > 0 && h < 24 ? Math.round(h * 60) : 0; }
+  const isHoursMode = emp => emp && emp.mode === 'hours';
 
   function nearestShift(t, shifts, field) {
     let best = null, bd = Infinity, second = Infinity;
@@ -243,15 +273,14 @@
   }
 
   /**
-   * state: {settings, employees:{id:{name, off}}, perms:{'id|date':{late,early}}, manual:{'id|date':{in,out,shift}}}
-   * data: نتيجة parseRows
-   * range: {from, to}
+   * state: {settings, employees:{id:{name, off, mode, hours, shift}}, perms:{'id|date':{late,early,short}}, manual:{'id|date':{in,out,shift,absence}}}
    */
   function compute(state, data, range) {
     const settings = { ...DEFAULT_SETTINGS, ...(state.settings || {}) };
     const shifts = shiftsOf(settings);
+    const autoShifts = shifts.filter(s => !s.ruleOnly);
     const byId = Object.fromEntries(shifts.map(s => [s.id, s]));
-    const grace = +settings.grace || 0;
+    const grace = +settings.grace || 0, hGrace = settings.hoursGrace == null ? 10 : +settings.hoursGrace;
     const groups = groupPunches(data ? data.punches : [], settings);
     const manual = state.manual || {}, perms = state.perms || {};
 
@@ -263,90 +292,115 @@
     for (const id of [...ids].sort((a, b) => (+a - +b) || a.localeCompare(b))) {
       const emp = (state.employees || {})[id] || {};
       if (emp.hidden) continue;
+      const hoursMode = isHoursMode(emp);
       const off = emp.off === '' || emp.off == null ? null : +emp.off;
       const days = [];
-      // المرحلة 1: تحديد الحضور/الانصراف والشيفت الواضح
+      // المرحلة 1: فترات الوجود والشيفت
       for (let n = from; n <= to; n++) {
         const key = keyFromNum(n), k = id + '|' + key;
-        if ((emp.start && key < emp.start) || (emp.end && key > emp.end)) continue; // قبل ما يبدأ أو بعد ما ساب الشغل
+        if ((emp.start && key < emp.start) || (emp.end && key > emp.end)) continue;
         const man = manual[k] || {};
-        let P = groups[k] || [];
-        const devP = P;
-        let tin = null, tout = null;
-        if (man.absence) P = [];
-        if (P.some(p => p.type)) {
-          // الجهاز بيحدد نوع البصمة: أول بصمة حضور وآخر بصمة انصراف
-          const ins = P.filter(p => p.type === 'in').map(p => p.t), outs = P.filter(p => p.type === 'out').map(p => p.t);
-          tin = ins.length ? Math.min(...ins) : null; tout = outs.length ? Math.max(...outs) : null;
-          if (tin != null && tout != null && tout <= tin) tout = null;
-        } else {
-          tin = P.length >= 1 ? P[0].t : null; tout = P.length >= 2 ? P[P.length - 1].t : null;
-          if (P.length === 1 && shifts.length) {
-            // بصمة واحدة من غير نوع: أقرب لميعاد حضور ولا انصراف؟
-            let bestIn = Infinity, bestOut = Infinity;
-            for (const s of shifts) { bestIn = Math.min(bestIn, Math.abs(P[0].t - s.st)); bestOut = Math.min(bestOut, Math.abs(P[0].t - s.en)); }
-            if (bestOut < bestIn) { tout = P[0].t; tin = null; }
-          }
+        const devP = groups[k] || [];
+        let segs = man.absence ? [] : segmentsOf(devP).map(s => ({ ...s }));
+        if (segs.length === 1 && segs[0].lone && autoShifts.length) {
+          // بصمة واحدة من غير نوع: أقرب لميعاد حضور ولا انصراف؟
+          let bi = Infinity, bo = Infinity; const t = segs[0].in;
+          for (const s of autoShifts) { bi = Math.min(bi, Math.abs(t - s.st)); bo = Math.min(bo, Math.abs(t - s.en)); }
+          if (bo < bi) segs = [{ in: null, out: t }];
         }
         const mIn = hm(man.in), mOut = hm(man.out);
-        if (mIn != null) tin = mIn;
-        if (mOut != null) { tout = mOut; if (tin != null && tout < tin) tout += 1440; }
-        const devIn = tinDev(devP), devOut = toutDev(devP);
+        if (mIn != null) { if (segs.length) segs[0].in = mIn; else segs = [{ in: mIn, out: null }]; }
+        if (mOut != null) { if (!segs.length) segs = [{ in: null, out: null }]; const L = segs[segs.length - 1]; L.out = mOut; if (L.in != null && L.out < L.in) L.out += 1440; }
+        const tin = segs.length ? segs[0].in : null, tout = segs.length ? segs[segs.length - 1].out : null;
+        // الشيفت: يدوي ← قاعدة اليوم ← ثابت للموظف ← تخمين
+        const rule = hoursMode ? null : ruleFor(settings, key);
         const fixed = emp.shift && byId[emp.shift] ? byId[emp.shift] : null;
-        let shift = man.shift && byId[man.shift] ? byId[man.shift] : fixed, ambiguous = false;
-        if (!shift && shifts.length) {
-          if (tin != null) { const r = nearestShift(tin, shifts, 'st'); shift = r.shift; ambiguous = r.gap < settings.ambiguousMinutes; }
-          else if (tout != null) { const r = nearestShift(tout, shifts, 'en'); shift = r.shift; ambiguous = r.gap < settings.ambiguousMinutes; }
+        let shift = null, ambiguous = false, locked = false;
+        if (!hoursMode) {
+          if (man.shift && byId[man.shift]) { shift = byId[man.shift]; locked = true; }
+          else if (rule && byId[rule.shift]) { shift = byId[rule.shift]; locked = true; }
+          else if (fixed) { shift = fixed; locked = true; }
+          else if (autoShifts.length) {
+            if (tin != null) { const r = nearestShift(tin, autoShifts, 'st'); shift = r.shift; ambiguous = r.gap < settings.ambiguousMinutes; }
+            else if (tout != null) { const r = nearestShift(tout, autoShifts, 'en'); shift = r.shift; ambiguous = r.gap < settings.ambiguousMinutes; }
+          }
         }
-        days.push({ key, k, P: devP, devIn, devOut, tin, tout, shift, ambiguous, absence: man.absence || '', manualShift: !!(man.shift && byId[man.shift]) || !!fixed, manual: mIn != null || mOut != null || !!man.absence });
+        days.push({ key, k, P: devP, segs, devIn: tinDev(devP), devOut: toutDev(devP), tin, tout, shift, ambiguous, rule, absence: man.absence || '', locked, manual: mIn != null || mOut != null || !!man.absence });
       }
       // المرحلة 2: الحالات المحيّرة تاخد الشيفت الغالب للموظف
       const cnt = {};
-      for (const d of days) if (d.shift && !d.ambiguous) cnt[d.shift.id] = (cnt[d.shift.id] || 0) + 1;
+      for (const d of days) if (d.shift && !d.ambiguous && !d.locked) cnt[d.shift.id] = (cnt[d.shift.id] || 0) + 1;
       const major = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
-      for (const d of days) if (d.ambiguous && !d.manualShift && major && byId[major]) d.shift = byId[major];
+      for (const d of days) if (d.ambiguous && !d.locked && major && byId[major]) d.shift = byId[major];
 
       // المرحلة 3: الحساب
       for (const d of days) {
         const wd = weekday(d.key), isOff = off === wd;
         const perm = perms[d.k] || {};
+        const complete = d.segs.filter(s => s.in != null && s.out != null);
+        const broken = d.segs.find(s => s.in == null || s.out == null);
         const row = {
-          id, date: d.key, weekday: wd, dayName: DAY_NAMES[wd],
-          shift: d.shift ? d.shift.name : '', shiftId: d.shift ? d.shift.id : '',
-          in: d.tin, out: d.tout, devIn: d.devIn, devOut: d.devOut, punches: d.P.length, manual: d.manual,
-          worked: null, late: null, lateExcused: 0, early: null, earlyExcused: 0, overtime: null,
-          status: '', code: '', permLate: !!perm.late, permEarly: !!perm.early
+          id, date: d.key, weekday: wd, dayName: DAY_NAMES[wd], mode: hoursMode ? 'hours' : 'shift',
+          shift: hoursMode ? 'ساعات' : d.shift ? d.shift.name : '', shiftId: d.shift ? d.shift.id : '', rule: d.rule ? (d.rule.name || '') : '',
+          periods: d.shift && !hoursMode ? d.shift.periods : null,
+          in: d.tin, out: d.tout, segs: d.segs, devIn: d.devIn, devOut: d.devOut, punches: d.P.length, manual: d.manual,
+          worked: null, late: null, lateExcused: 0, early: null, earlyExcused: 0, overtime: null, short: 0, shortExcused: 0,
+          status: '', code: '', permLate: !!perm.late, permEarly: !!perm.early, permShort: !!perm.short
         };
-        if (d.tin == null && d.tout == null) {
-          row.shift = ''; row.shiftId = '';
+        if (!d.segs.length) {
+          row.shift = hoursMode ? 'ساعات' : ''; row.shiftId = '';
           if (d.absence === 'leave') { row.code = 'leave'; row.status = 'إجازة'; }
           else if (isOff && !d.absence) { row.code = 'off'; row.status = 'إجازة أسبوعية'; }
           else if (d.absence === 'excused') { row.code = 'excused'; row.status = 'غياب بإذن'; }
           else if (d.absence === 'absent') { row.code = 'absent'; row.status = 'غياب'; }
           else { row.code = 'pending'; row.status = 'مستني تسجيلك'; }
-        } else if (d.tin == null || d.tout == null) {
-          row.code = 'missing'; row.status = d.tin == null ? 'بصمة حضور ناقصة' : 'بصمة انصراف ناقصة';
-          row.missingField = d.tin == null ? 'in' : 'out';
-        } else if (isOff) {
-          row.code = 'offwork'; row.status = 'شغل يوم إجازة';
-          row.worked = d.tout - d.tin; row.late = 0; row.early = 0; row.overtime = row.worked;
+        } else if (broken) {
+          row.code = 'missing';
+          row.missingField = broken.in == null ? 'in' : 'out';
+          row.status = row.missingField === 'in' ? 'بصمة حضور ناقصة' : 'بصمة انصراف ناقصة';
         } else {
-          row.code = 'present'; row.status = 'حاضر';
-          row.worked = d.tout - d.tin;
-          const s = d.shift;
-          if (s) {
-            // نهاية اليوم = بداية الشيفت + ساعات الموظف (لو متحددة) أو نهاية الشيفت
-            const en = hoursOf(emp) ? s.st + hoursOf(emp) : s.en;
-            row.required = en - s.st;
-            const rawLate = d.tin - s.st;
-            let late = rawLate > grace ? rawLate - grace : 0;
-            let early = Math.max(0, en - d.tout);
-            row.overtime = Math.max(0, d.tout - en);
-            if (perm.late && late > 0) { row.lateExcused = late; late = 0; }
-            if (perm.early && early > 0) { row.earlyExcused = early; early = 0; }
-            row.late = late; row.early = early;
-          } else { row.late = 0; row.early = 0; row.overtime = 0; }
-          if (row.manual) row.status = 'حاضر (يدوي)';
+          row.worked = complete.reduce((a, s) => a + s.out - s.in, 0);
+          row.late = 0; row.early = 0; row.overtime = 0;
+          if (isOff) { row.code = 'offwork'; row.status = 'شغل يوم إجازة'; row.overtime = row.worked; }
+          else if (hoursMode) {
+            row.code = 'present'; row.status = 'حاضر';
+            const req = hoursOf(emp) || 480; row.required = req;
+            const diff = req - row.worked;
+            row.short = diff > hGrace ? diff : 0;
+            row.overtime = Math.max(0, row.worked - req);
+            if (perm.short && row.short) { row.shortExcused = row.short; row.short = 0; }
+          } else {
+            row.code = 'present'; row.status = 'حاضر';
+            const s = d.shift;
+            if (s) {
+              let per = s.periods.map(p => ({ ...p }));
+              // ساعات الموظف بتغيّر نهاية الشيفت العادي (مش المقسوم)
+              if (per.length === 1 && hoursOf(emp)) per[0].en = per[0].st + hoursOf(emp);
+              row.periods = per;
+              row.required = per.reduce((a, p) => a + p.en - p.st, 0);
+              let late = 0, early = 0, ot = 0, missed = 0;
+              if (per.length === 1) {
+                const raw = d.tin - per[0].st; late = raw > grace ? raw - grace : 0;
+                early = Math.max(0, per[0].en - d.tout); ot = Math.max(0, d.tout - per[0].en);
+              } else {
+                // الشيفت المقسوم: كل فترة بتتقارن بفترة الوجود اللي بتغطيها أكتر
+                const used = new Set();
+                for (const p of per) {
+                  let best = -1, bo = 0;
+                  complete.forEach((sg, i) => { const o = Math.min(sg.out, p.en) - Math.max(sg.in, p.st); if (!used.has(i) && o > bo) { bo = o; best = i; } });
+                  if (best < 0) { early += p.en - p.st; missed++; continue; }
+                  used.add(best); const sg = complete[best];
+                  const raw = sg.in - p.st; late += raw > grace ? raw - grace : 0;
+                  early += Math.max(0, p.en - sg.out); ot += Math.max(0, sg.out - p.en);
+                }
+                row.missedPeriods = missed;
+              }
+              if (perm.late && late > 0) { row.lateExcused = late; late = 0; }
+              if (perm.early && early > 0) { row.earlyExcused = early; early = 0; }
+              row.late = late; row.early = early; row.overtime = ot;
+            }
+          }
+          if (row.manual && row.code === 'present') row.status = 'حاضر (يدوي)';
         }
         if (row.manual && row.code === 'offwork') row.status += ' (يدوي)';
         d.row = row;
@@ -357,13 +411,13 @@
       const count = c => rows.filter(r => r.code === c).length;
       result.push({
         id, name: emp.name || (data && data.names && data.names[id]) || ('موظف ' + id),
-        offDay: off == null ? '' : DAY_NAMES[off],
+        offDay: off == null ? '' : DAY_NAMES[off], mode: hoursMode ? 'hours' : 'shift',
         rows,
         summary: {
           present: count('present'), absent: count('absent'), excused: count('excused'), leave: count('leave'), pending: count('pending'), off: count('off'), offwork: count('offwork'), missing: count('missing'),
           worked: sum('worked'), required: sum('required'), late: sum('late'), lateDays: rows.filter(r => r.late > 0).length,
           lateExcused: sum('lateExcused'), early: sum('early'), earlyDays: rows.filter(r => r.early > 0).length,
-          earlyExcused: sum('earlyExcused'), overtime: sum('overtime')
+          earlyExcused: sum('earlyExcused'), overtime: sum('overtime'), short: sum('short'), shortDays: rows.filter(r => r.short > 0).length, shortExcused: sum('shortExcused')
         }
       });
     }
@@ -376,5 +430,5 @@
     return { from: ks[0], to: ks[ks.length - 1] };
   }
 
-  return { stateOf, hoursOf, DEFAULT_SETTINGS, DAY_NAMES, parseRows, parseAttlogText, compute, dataRange, fmtClock, fmtDur, hm, weekday, dayNum, keyFromNum };
+  return { stateOf, hoursOf, shiftsOf, ruleFor, segmentsOf, DEFAULT_SETTINGS, DAY_NAMES, parseRows, parseAttlogText, compute, dataRange, fmtClock, fmtDur, hm, weekday, dayNum, keyFromNum };
 });
