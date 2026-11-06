@@ -187,7 +187,7 @@
     const present = rows.filter(r => ['present', 'offwork', 'working'].includes(r.code));
     const byShift = {}; for (const r of present) if (r.shift) byShift[r.shift] = (byShift[r.shift] || 0) + 1;
     const C2 = 2 * Math.PI * 15.5, frac = rows.length ? done / rows.length : 0;
-    const ring = h('div', { class: 'ring', html: `<svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15.5" fill="none" stroke="rgba(255,255,255,.22)" stroke-width="3.5"/><circle cx="18" cy="18" r="15.5" fill="none" stroke="#F4C53A" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="${(C2 * frac).toFixed(1)} ${C2.toFixed(1)}"/></svg>` },
+    const ring = h('div', { class: 'ring', html: `<svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15.5" fill="none" style="stroke:var(--ring-track)" stroke-width="3.5"/><circle cx="18" cy="18" r="15.5" fill="none" style="stroke:var(--ring-fill)" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="${(C2 * frac).toFixed(1)} ${C2.toFixed(1)}"/></svg>` },
       h('b', null, `${done}/${rows.length}`, h('small', null, 'متسجلين')));
     const dateInput = h('input', { type: 'date', value: date, 'aria-label': 'اختار يوم', onchange: ev => { if (ev.target.value) { UI.date = ev.target.value; render(); } } });
     const lines = future ? ['يوم جاي — تقدر تسجّل أذونات أو إجازات مقدّمًا']
