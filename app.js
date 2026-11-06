@@ -1016,7 +1016,7 @@
 
   /* ======================= الإعدادات ======================= */
   function renderSettings() {
-    $('subtitle').textContent = 'الإعدادات';
+    $('subtitle').textContent = '';
     const st = S.settings, b = S.backup;
     const row = (title, sub, ctrl) => h('div', { class: 'set-row' }, h('div', { class: 'lbl' }, h('b', null, title), sub ? h('span', null, sub) : null), ctrl);
     const numIn = (key, min, max) => h('input', { type: 'number', min, max, inputmode: 'numeric', value: st[key], onchange: ev => { const v = parseInt(ev.target.value, 10); if (!isNaN(v) && v >= min) { st[key] = v; save(); toast('اتحفظ'); } } });
@@ -1068,7 +1068,16 @@
         rm.on ? row('الساعة', '12 بالليل = اليوم اللي لسه خالص', h('input', { type: 'time', value: rm.time, onchange: ev => { rm.time = ev.target.value || '00:00'; save(); scheduleReminder(true); toast('اتحفظ'); } })) : null,
         h('div', { id: 'remind-status' })
       ] : h('p', { class: 'muted', style: 'margin-top:0' }, 'التذكير متاح في تطبيق الأندرويد بس.'));
-    $('tab-settings').replaceChildren(dataCard, remindCard, backupCard, shiftCard, rulesCard, dangerCard);
+    const STY = [
+      { v: 'vivid', l: 'ملوّن حيوي', hb: '#5B4BDB', bg: '#F6F3FF', t: ['#5B4BDB', '#FF8FA3', '#FFD66B'] },
+      { v: 'default', l: 'أخضر هادي', hb: '#0F766E', bg: '#EEF1F4', t: ['#fff', '#fff', '#F4C53A'] },
+      { v: 'dark', l: 'داكن احترافي', hb: '#0B1220', bg: '#0B1220', t: ['#131C2E', '#34D399', '#FBBF24'] },
+      { v: 'minimal', l: 'أبيض بسيط', hb: '#FFFFFF', bg: '#FFFFFF', t: ['#111', '#F3F3F3', '#16A34A'] }];
+    const styleCard = h('div', { class: 'card' }, h('h2', null, 'شكل التطبيق'),
+      h('div', { class: 'styles' }, STY.map(x => h('button', { class: 'sty' + ((st.style || 'vivid') === x.v ? ' on' : ''), onclick: () => { st.style = x.v; save(); applyStyle(); render(); toast('اتغيّر شكل التطبيق'); } },
+        h('div', { class: 'sty-prev', style: `background:${x.bg}` }, h('div', { class: 'hb', style: `background:${x.hb};${x.v === 'minimal' ? 'border-bottom:1px solid #E9E9E9' : ''}` }), h('div', { class: 'bdy' }, x.t.map(c => h('i', { style: `background:${c};${c === '#fff' || c === '#F3F3F3' ? 'border:1px solid #DDD' : ''}` })))),
+        h('b', null, x.l)))));
+    $('tab-settings').replaceChildren(styleCard, dataCard, remindCard, backupCard, shiftCard, rulesCard, dangerCard);
     if (isNative()) { listAutoBackups(); remindStatus(); }
   }
 
@@ -1102,7 +1111,7 @@
       const obj = JSON.parse(text);
       if (!obj || typeof obj !== 'object' || !obj.settings) throw new Error();
       delete obj.app; delete obj.exported;
-      S = Object.assign(blank(), obj); normalize(); save(); toast('اترجعت النسخة الاحتياطية'); render();
+      S = Object.assign(blank(), obj); normalize(); save(); applyStyle(); toast('اترجعت النسخة الاحتياطية'); render();
     } catch (e) { toast('الملف ده مش نسخة احتياطية سليمة'); }
   }
   function backupDue() {
@@ -1260,13 +1269,19 @@
   }
 
   /* ======================= البداية ======================= */
+  function applyStyle() {
+    const st = S.settings.style || 'vivid', el = document.documentElement;
+    if (st === 'default') el.removeAttribute('data-style'); else el.setAttribute('data-style', st);
+    const meta = document.querySelector('meta[name=theme-color]');
+    if (meta) meta.setAttribute('content', { vivid: '#5B4BDB', default: '#0F766E', dark: '#0B1220', minimal: '#FFFFFF' }[st] || '#0F766E');
+  }
   // شاشة التحميل: بتفضل لحد ما الأنيميشن يخلص (حوالي ثانية ونص) وبعدين تختفي
   (function hideSplash() {
     const sp = $('splash'); if (!sp) return;
     const reduce = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
     setTimeout(() => { sp.classList.add('out'); setTimeout(() => sp.remove(), 400); }, reduce ? 500 : 1500);
   })();
-  normalize(); save();
+  normalize(); save(); applyStyle();
   if (isNative()) $('file').removeAttribute('accept'); // عشان ملفات .dat تبان في اختيار الملفات
   render();
   autoBackup();

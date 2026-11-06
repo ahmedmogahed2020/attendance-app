@@ -10,7 +10,8 @@
   const DEFAULT_SETTINGS = {
     grace: 15,           // دقائق السماح في التأخير
     dayCutHour: 5,       // البصمة قبل الساعة 5 الفجر تتبع اليوم السابق
-    deviceFrom: '2026-11-06', // بصمات الجهاز قبل اليوم ده (فترة التجربة) بتتجاهل
+    deviceFrom: '2026-11-06',
+    style: 'vivid',      // شكل التطبيق: vivid / default / dark / minimal // بصمات الجهاز قبل اليوم ده (فترة التجربة) بتتجاهل
     dedupeMinutes: 10,   // بصمتين ورا بعض في أقل من 10 دقايق = بصمة واحدة
     ambiguousMinutes: 120,
     shifts: [

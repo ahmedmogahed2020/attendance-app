@@ -6,6 +6,11 @@
 <title>الحضور والانصراف</title>
 <meta name="theme-color" content="#0F766E">
 <link rel="manifest" href="manifest.json">
+<script>
+  // شكل التطبيق قبل ما الصفحة تترسم عشان مفيش وميض
+  (function(){var st='vivid';try{var x=JSON.parse(localStorage.getItem('attendance_state_v1')||'null');if(x&&x.settings&&x.settings.style)st=x.settings.style;}catch(e){}
+  if(st!=='default')document.documentElement.setAttribute('data-style',st);})();
+</script>
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <style>
@@ -497,6 +502,15 @@ dialog.full .warn-line{margin-top:8px}
 :root[data-style="vivid"] .totals .total:nth-child(3){background:#FFD66B}:root[data-style="vivid"] .totals .total:nth-child(3) *{color:#3A2A00!important}
 :root[data-style="vivid"] .totals .total:nth-child(4){background:#7FE0C0}:root[data-style="vivid"] .totals .total:nth-child(4) *{color:#08392A!important}
 :root[data-style="vivid"] nav.bottom{border-radius:24px 24px 0 0;border-top:0;box-shadow:0 -4px 20px rgba(91,75,219,.1)}
+
+/* اختيار شكل التطبيق */
+.styles{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.sty{border:2px solid var(--line);border-radius:16px;background:var(--paper);padding:6px;cursor:pointer;font:inherit;color:var(--ink);text-align:center}
+.sty.on{border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-soft)}
+.sty-prev{border-radius:11px;overflow:hidden;height:74px;display:flex;flex-direction:column;border:1px solid rgba(0,0,0,.06)}
+.sty-prev .hb{height:24px}.sty-prev .bdy{flex:1;padding:6px;display:flex;gap:4px;align-items:flex-start}
+.sty-prev .bdy i{flex:1;height:26px;border-radius:6px}
+.sty b{display:block;font-size:13.5px;margin-top:6px}
 </style>
 </head>
 <body>
