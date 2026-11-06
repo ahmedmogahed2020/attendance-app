@@ -237,6 +237,34 @@ html,body{overflow-x:hidden}
 @keyframes sp-pop{to{transform:scale(1)}}
 @keyframes sp-in{to{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){.sp-lines path,.sp-clock,.sp-name{animation:none;stroke-dashoffset:0;transform:none;opacity:1}.sp-scan{display:none}}
+
+/* زرار التسجيل السريع */
+.fab{position:fixed;left:16px;bottom:calc(76px + env(safe-area-inset-bottom));z-index:25;width:58px;height:58px;border-radius:18px;border:0;background:var(--teal);color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 18px rgba(15,118,110,.35);cursor:pointer}
+.fab svg{width:28px;height:28px}
+:root[data-theme="dark"] .fab{color:#0b1715}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .fab{color:#0b1715}}
+main{padding-bottom:80px}
+.qchips{display:flex;flex-wrap:wrap;gap:6px}
+.qchip{border:1px solid var(--line);background:var(--bg);border-radius:999px;padding:7px 13px;font-size:14px;font-weight:500;cursor:pointer;min-height:38px;position:relative;color:var(--ink)}
+.qchip.on{background:var(--teal);border-color:var(--teal);color:#fff}
+.qdate input{position:absolute;inset:0;opacity:0;width:100%;height:100%;min-height:0;padding:0;border:0;cursor:pointer}
+.qtypes{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.qtypes .qchip{border-radius:12px;min-height:44px}
+.qtypes .qchip.on.q-absent{background:var(--rose);border-color:var(--rose)}
+.qtypes .qchip.on.q-excused,.qtypes .qchip.on.q-leave,.qtypes .qchip.on.q-late,.qtypes .qchip.on.q-early{background:var(--violet);border-color:var(--violet)}
+textarea{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:11px;background:var(--bg);font:inherit;color:inherit;resize:vertical}
+textarea:focus{outline:2px solid var(--teal);border-color:transparent}
+.notes{margin-top:6px}
+.note-line{display:flex;align-items:flex-start;gap:6px;font-size:13.5px;background:var(--amber-soft);color:var(--ink);border-radius:10px;padding:6px 10px;margin-top:6px;line-height:1.5}
+.note-line::before{content:"📝";flex:0 0 auto}
+.note-x{margin-inline-start:auto;border:0;background:transparent;color:var(--muted);font-size:18px;line-height:1;cursor:pointer;padding:0 4px;min-height:0}
+.note-td{max-width:220px;white-space:normal;font-size:12.5px;color:var(--muted)}
+.rv-list{display:grid;gap:8px;max-height:52vh;overflow:auto}
+.rv{display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--bg);border-radius:12px;padding:10px}
+.rv b{font-weight:600}
+.rv-btns{display:flex;gap:6px;flex:0 0 auto}
+.ctrls{flex-wrap:wrap}
+.ctrls .seg.four{flex:1 1 100%;grid-template-columns:repeat(4,1fr);margin:0}
 </style>
 </head>
 <body>
@@ -274,6 +302,7 @@ html,body{overflow-x:hidden}
   <button data-tab="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>الإعدادات</button>
 </nav>
 
+<button class="fab" id="fab" aria-label="تسجيل سريع: إذن أو غياب أو ملاحظة"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
 <dialog id="sheet"><div class="in" id="sheet-in"></div></dialog>
 <div class="toast" id="toast" role="status"></div>
 
