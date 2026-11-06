@@ -20,6 +20,7 @@
       { id: 'e', name: 'مسائي', start: '15:00', end: '23:00' },
       { id: 'r', name: 'رمضان (مقسوم)', start: '10:00', end: '14:00', start2: '20:00', end2: '00:00', ruleOnly: true }
     ],
+    holidays: [],
     // أيام بمواعيد خاصة: يوم في الأسبوع / تاريخ / فترة ← شيفت
     rules: [
       { id: 'fri', name: 'الجمعة', kind: 'weekday', weekday: 5, shift: 'e', on: true },
@@ -216,6 +217,10 @@
       return { ...s, periods: per, st: per[0].st, en: per[per.length - 1].en, len: per.reduce((a, p) => a + p.en - p.st, 0), split: per.length > 1 };
     }).filter(Boolean);
   }
+  /** الإجازة الرسمية اللي بتنطبق على يوم (لو فيه) */
+  function holidayFor(settings, key) {
+    return (settings.holidays || []).find(x => x && x.on !== false && x.from && key >= x.from && key <= (x.to || x.from)) || null;
+  }
   /** القاعدة اللي بتنطبق على يوم (تاريخ/فترة أولوية عن يوم الأسبوع) */
   function ruleFor(settings, key) {
     const rules = (settings.rules || []).filter(r => r && r.on !== false && r.shift);
@@ -275,13 +280,17 @@
   /**
    * state: {settings, employees:{id:{name, off, mode, hours, shift}}, perms:{'id|date':{late,early,short}}, manual:{'id|date':{in,out,shift,absence}}}
    */
+  const GC = { key: null, val: null };
   function compute(state, data, range) {
     const settings = { ...DEFAULT_SETTINGS, ...(state.settings || {}) };
     const shifts = shiftsOf(settings);
     const autoShifts = shifts.filter(s => !s.ruleOnly);
     const byId = Object.fromEntries(shifts.map(s => [s.id, s]));
     const grace = +settings.grace || 0, hGrace = settings.hoursGrace == null ? 10 : +settings.hoursGrace;
-    const groups = groupPunches(data ? data.punches : [], settings);
+    // تجميع البصمات بيتحفظ طول ما البصمات والإعدادات مش متغيرين (data.ver)
+    const gk = data && data.ver != null ? `${data.ver}|${settings.dayCutHour}|${settings.dedupeMinutes}|${settings.deviceFrom}` : null;
+    let groups;
+    if (gk && GC.key === gk) groups = GC.val; else { groups = groupPunches(data ? data.punches : [], settings); if (gk) { GC.key = gk; GC.val = groups; } }
     const manual = state.manual || {}, perms = state.perms || {};
 
     const ids = new Set(Object.keys(state.employees || {}));
@@ -335,7 +344,7 @@
 
       // المرحلة 3: الحساب
       for (const d of days) {
-        const wd = weekday(d.key), isOff = off === wd;
+        const wd = weekday(d.key), hol = holidayFor(settings, d.key), isOff = off === wd || !!hol;
         const perm = perms[d.k] || {};
         const complete = d.segs.filter(s => s.in != null && s.out != null);
         const broken = d.segs.find(s => s.in == null || s.out == null);
@@ -350,6 +359,7 @@
         if (!d.segs.length) {
           row.shift = hoursMode ? 'ساعات' : ''; row.shiftId = '';
           if (d.absence === 'leave') { row.code = 'leave'; row.status = 'إجازة'; }
+          else if (hol && !d.absence) { row.code = 'holiday'; row.status = 'إجازة رسمية' + (hol.name ? ': ' + hol.name : ''); }
           else if (isOff && !d.absence) { row.code = 'off'; row.status = 'إجازة أسبوعية'; }
           else if (d.absence === 'excused') { row.code = 'excused'; row.status = 'غياب بإذن'; }
           else if (d.absence === 'absent') { row.code = 'absent'; row.status = 'غياب'; }
@@ -361,7 +371,7 @@
         } else {
           row.worked = complete.reduce((a, s) => a + s.out - s.in, 0);
           row.late = 0; row.early = 0; row.overtime = 0;
-          if (isOff) { row.code = 'offwork'; row.status = 'شغل يوم إجازة'; row.overtime = row.worked; }
+          if (isOff) { row.code = 'offwork'; row.status = hol ? 'شغل يوم إجازة رسمية' : 'شغل يوم إجازة'; row.overtime = row.worked; }
           else if (hoursMode) {
             row.code = 'present'; row.status = 'حاضر';
             const req = hoursOf(emp) || 480; row.required = req;
@@ -414,7 +424,7 @@
         offDay: off == null ? '' : DAY_NAMES[off], mode: hoursMode ? 'hours' : 'shift',
         rows,
         summary: {
-          present: count('present'), absent: count('absent'), excused: count('excused'), leave: count('leave'), pending: count('pending'), off: count('off'), offwork: count('offwork'), missing: count('missing'),
+          present: count('present'), absent: count('absent'), excused: count('excused'), leave: count('leave'), pending: count('pending'), off: count('off'), holiday: count('holiday'), offwork: count('offwork'), missing: count('missing'),
           worked: sum('worked'), required: sum('required'), late: sum('late'), lateDays: rows.filter(r => r.late > 0).length,
           lateExcused: sum('lateExcused'), early: sum('early'), earlyDays: rows.filter(r => r.early > 0).length,
           earlyExcused: sum('earlyExcused'), overtime: sum('overtime'), short: sum('short'), shortDays: rows.filter(r => r.short > 0).length, shortExcused: sum('shortExcused')
@@ -430,5 +440,5 @@
     return { from: ks[0], to: ks[ks.length - 1] };
   }
 
-  return { stateOf, hoursOf, shiftsOf, ruleFor, segmentsOf, DEFAULT_SETTINGS, DAY_NAMES, parseRows, parseAttlogText, compute, dataRange, fmtClock, fmtDur, hm, weekday, dayNum, keyFromNum };
+  return { holidayFor, stateOf, hoursOf, shiftsOf, ruleFor, segmentsOf, DEFAULT_SETTINGS, DAY_NAMES, parseRows, parseAttlogText, compute, dataRange, fmtClock, fmtDur, hm, weekday, dayNum, keyFromNum };
 });
