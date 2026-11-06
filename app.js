@@ -129,8 +129,14 @@
   }
 
   /* ======================= التنقل ======================= */
-  const UI = { tab: 'day', date: todayKey(), month: monthOf(todayKey()), rmode: 'month', range: { from: monthOf(todayKey()) + '-01', to: todayKey() }, openPresent: new Set(), focusEmp: '' };
-  document.querySelectorAll('nav.bottom button').forEach(b => b.addEventListener('click', () => go(b.dataset.tab)));
+  const UI = {
+    tab: 'day', date: todayKey(), month: monthOf(todayKey()), gmonth: monthOf(todayKey()), pmonth: monthOf(todayKey()),
+    rmode: 'month', range: { from: monthOf(todayKey()) + '-01', to: todayKey() },
+    openPresent: new Set(), filter: 'all', gridMode: 'status', gridSel: null, profile: '', pday: '', editor: null, empQ: ''
+  };
+  document.querySelectorAll('nav.bottom button').forEach(b => b.addEventListener('click', () => { if (b.dataset.tab === 'emps') UI.profile = ''; go(b.dataset.tab); }));
+  $('settings-btn').addEventListener('click', () => go('settings'));
+  $('search-btn').addEventListener('click', () => openSearch());
   function go(tab) {
     UI.tab = tab;
     document.querySelectorAll('nav.bottom button').forEach(x => x.classList.toggle('on', x.dataset.tab === tab));
@@ -138,11 +144,14 @@
     window.scrollTo(0, 0);
     render();
   }
-  function goDay(date, empId) { UI.date = date; UI.focusEmp = empId || ''; go('day'); }
+  function goDay(date, empId) { UI.date = date; go('day'); if (empId) setTimeout(() => openEditor(empId, date), 60); }
+  function openProfile(id) { UI.profile = id; UI.pmonth = monthOf(UI.tab === 'grid' ? UI.gmonth + '-01' : todayKey()); UI.pday = ''; go('emps'); }
   function render() {
-    ({ day: renderDay, month: renderMonth, emps: renderEmps, settings: renderSettings })[UI.tab]();
+    renderTop();
+    ({ day: renderDay, grid: renderGrid, month: renderMonth, emps: renderEmps, settings: renderSettings })[UI.tab]();
     const p = pendingIn(monthOf(todayKey())).length;
     $('badge-day').hidden = !p; $('badge-day').textContent = p > 99 ? '99+' : p;
+    if (UI.editor && $('sheet').open) drawEditor();
   }
   function navBar(label, sub, inputType, value, onPick, onPrev, onNext) {
     const inp = h('input', { type: inputType, value, 'aria-label': 'اختار', onchange: ev => ev.target.value && onPick(ev.target.value) });
@@ -151,183 +160,514 @@
       h('label', { class: 'picker' }, h('b', null, label), sub ? h('small', null, sub) : null, inp),
       h('button', { class: 'arrow', 'aria-label': 'اللي بعده', html: ICON.next, onclick: onNext }));
   }
+  const initial = name => (String(name).trim().replace(/^(ال)/, '').charAt(0) || '؟');
+  const avatar = (name, cls) => h('span', { class: 'avatar' + (cls ? ' ' + cls : '') }, initial(name));
+  const SHORT_DAYS = ['حد', 'اتنين', 'تلات', 'أربع', 'خميس', 'جمعة', 'سبت'];
 
-  /* ======================= شاشة اليوم ======================= */
+  /* ---------- الهيدر ---------- */
+  function renderTop() {
+    const titles = { day: 'الحضور والانصراف', grid: 'شبكة الشهر', month: 'التقارير', emps: UI.profile ? empName(UI.profile) : 'الموظفين', settings: 'الإعدادات' };
+    $('title').textContent = titles[UI.tab];
+    const extra = $('top-extra');
+    if (UI.tab !== 'day' || !sortedIds().length) { extra.replaceChildren(); return; }
+    const date = UI.date, today = todayKey(), future = date > today;
+    const rows = computeRange(date, date).filter(e => e.rows.length).map(e => e.rows[0]);
+    const need = rows.filter(r => r.code === 'pending' || r.code === 'missing').length;
+    const done = rows.length - (future ? rows.filter(r => r.code === 'pending').length : need);
+    const present = rows.filter(r => r.code === 'present' || r.code === 'offwork');
+    const byShift = {}; for (const r of present) if (r.shift) byShift[r.shift] = (byShift[r.shift] || 0) + 1;
+    const C2 = 2 * Math.PI * 15.5, frac = rows.length ? done / rows.length : 0;
+    const ring = h('div', { class: 'ring', html: `<svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15.5" fill="none" stroke="rgba(255,255,255,.22)" stroke-width="3.5"/><circle cx="18" cy="18" r="15.5" fill="none" stroke="#F4C53A" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="${(C2 * frac).toFixed(1)} ${C2.toFixed(1)}"/></svg>` },
+      h('b', null, `${done}/${rows.length}`, h('small', null, 'متسجلين')));
+    const dateInput = h('input', { type: 'date', value: date, 'aria-label': 'اختار يوم', onchange: ev => { if (ev.target.value) { UI.date = ev.target.value; render(); } } });
+    const lines = future ? ['يوم جاي — تقدر تسجّل أذونات أو إجازات مقدّمًا']
+      : [`${present.length} حاضر · ${need ? need + ' مستنيين تسجيلك' : 'كله متسجّل ✓'}`, Object.keys(byShift).length ? Object.entries(byShift).map(([s, n]) => `${s} ${n}`).join(' · ') : null];
+    const hero = h('div', { class: 'hero' }, ring,
+      h('label', { class: 'hero-t' }, h('b', null, longDate(date) + (date === today ? ' — النهارده' : '')), ...lines.filter(Boolean).map(l => h('div', null, l)), dateInput));
+    // شريط الأسبوع (من السبت للجمعة)
+    const start = addDays(date, -((E.weekday(date) + 1) % 7));
+    const pend = new Set(pendingIn(monthOf(start)).concat(monthOf(addDays(start, 6)) !== monthOf(start) ? pendingIn(monthOf(addDays(start, 6))) : []));
+    const week = h('div', { class: 'week' },
+      h('button', { class: 'wk-arrow', 'aria-label': 'الأسبوع اللي فات', html: ICON.prev, onclick: () => { UI.date = addDays(date, -7); render(); } }),
+      ...Array.from({ length: 7 }, (_, i) => {
+        const k = addDays(start, i);
+        return h('button', { class: 'wd' + (k === date ? ' on' : '') + (k === today ? ' today' : ''), onclick: () => { UI.date = k; render(); } },
+          SHORT_DAYS[E.weekday(k)], h('b', null, +k.slice(8)), pend.has(k) ? h('i') : null);
+      }),
+      h('button', { class: 'wk-arrow', 'aria-label': 'الأسبوع الجاي', html: ICON.next, onclick: () => { UI.date = addDays(date, 7); render(); } }));
+    extra.replaceChildren(hero, week);
+  }
+
+  /* ======================= شاشة النهارده ======================= */
   function renderDay() {
-    const root = $('tab-day'), date = UI.date, today = todayKey();
-    $('subtitle').textContent = longDate(date) + (date === today ? ' — النهارده' : '');
-    const kids = [];
-    const rel = date === today ? 'النهارده' : date === addDays(today, -1) ? 'امبارح' : date > today ? 'يوم جاي' : fmtDate(date);
-    kids.push(navBar(longDate(date), rel, 'date', date, v => { UI.date = v; render(); }, () => { UI.date = addDays(date, -1); render(); }, () => { UI.date = addDays(date, 1); render(); }));
-
+    const root = $('tab-day'), date = UI.date, today = todayKey(), future = date > today;
+    $('subtitle').textContent = '';
     if (!sortedIds().length) {
-      root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'لسه مفيش موظفين'), 'ارفع ملف جهاز البصمة من الزرار اللي فوق، أو ضيف الموظفين من شاشة "الموظفين".',
+      root.replaceChildren(h('div', { class: 'card empty' }, h('b', null, 'لسه مفيش موظفين'), 'ارفع ملف جهاز البصمة من زرار ⬆ اللي فوق، أو ضيف الموظفين من شاشة "الموظفين".',
         h('div', { class: 'btns', style: 'justify-content:center;margin-top:12px' }, h('button', { class: 'btn primary', onclick: () => $('file').click() }, 'رفع ملف الجهاز'), h('button', { class: 'btn', onclick: () => go('emps') }, 'إضافة موظف'))));
       return;
     }
-
-    // الأيام الناقصة في الشهر
-    const pend = pendingIn(monthOf(date) > monthOf(today) ? monthOf(today) : monthOf(date));
-    const otherPend = pend.filter(d => d !== date);
-    if (otherPend.length) {
-      const next = otherPend.find(d => d > date) || otherPend[0];
-      kids.push(h('div', { class: 'banner' }, h('span', null, `${new Set(pend).size} يوم في ${monthLabel(monthOf(pend[0]))} محتاجين تسجيلك`),
-        h('button', { class: 'btn sm', onclick: () => { UI.date = next; render(); } }, `روح لـ ${fmtDate(next).slice(0, -5)}`)));
+    const kids = [];
+    const cm = monthOf(date) > monthOf(today) ? monthOf(today) : monthOf(date);
+    const items = closeItems(cm);
+    if (items.length) {
+      const pend = items.filter(i => i.kind === 'pending' || i.kind === 'missing').length, rv = items.length - pend;
+      kids.push(h('div', { class: 'inbox' }, h('div', { class: 'inbox-n' }, items.length),
+        h('div', { class: 'grow' }, h('b', null, 'حاجات محتاجة قرارك'), h('div', { class: 'muted' }, [pend ? `${pend} تسجيل ناقص` : null, rv ? `${rv} تأخير/بدري: بإذن ولا لأ؟` : null].filter(Boolean).join(' · ') + ` — ${monthLabel(cm)}`)),
+        h('button', { class: 'btn primary sm', onclick: () => closeFlow(cm) }, 'ابدأ')));
     }
-
-    const res = computeRange(date, date).filter(e => e.rows.length);
-    if (!res.length) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'مفيش موظفين شغالين اليوم ده'), 'راجع تاريخ بداية وترك الشغل في شاشة الموظفين.')); return; }
-    const rows = res.map(e => ({ e, r: e.rows[0] }));
-    const future = date > today;
-    const cnt = c => rows.filter(x => c.includes(x.r.code)).length;
-    const need = rows.filter(x => x.r.code === 'pending' || x.r.code === 'missing');
-    kids.push(h('div', { class: 'chips', style: 'margin-bottom:10px' },
-      chip('حاضر', cnt(['present', 'offwork']), 'var(--green)'), chip('غياب', cnt(['absent']), 'var(--rose)'),
-      chip('بإذن/إجازة', cnt(['excused', 'leave', 'off']), 'var(--violet)'), future ? null : chip('مستني', need.length, 'var(--amber-ink)')));
-
-    const pendingOnly = rows.filter(x => x.r.code === 'pending');
+    const all = computeRange(date, date).filter(e => e.rows.length).map(e => ({ e, r: e.rows[0] }));
+    if (!all.length) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'مفيش موظفين شغالين اليوم ده'), 'راجع تاريخ بداية وترك الشغل في شاشة الموظفين.')); return; }
+    const isNeed = r => r.code === 'pending' || r.code === 'missing';
+    const groups = { all: () => true, present: r => r.code === 'present' || r.code === 'offwork', absent: r => ['absent', 'excused', 'leave', 'off'].includes(r.code), need: isNeed };
+    const cnt = f => all.filter(x => groups[f](x.r)).length;
+    const mode = S.view.dayMode || 'timeline';
+    const vt = (v, l) => h('button', { class: mode === v ? 'on' : '', onclick: () => { S.view.dayMode = v; save(); render(); } }, l);
+    const fc = (v, l) => h('button', { class: 'fc' + (UI.filter === v ? ' on' : ''), onclick: () => { UI.filter = v; render(); } }, l, ' ', h('b', null, cnt(v)));
+    kids.push(h('div', { class: 'toolbar' }, h('div', { class: 'vt' }, vt('timeline', 'خط زمني'), vt('list', 'قايمة')),
+      h('div', { class: 'fil' }, fc('all', 'الكل'), fc('present', 'حاضر'), fc('absent', 'غياب/إجازة'), future ? null : fc('need', 'مستني'))));
+    const pendingOnly = all.filter(x => x.r.code === 'pending');
     if (!future && pendingOnly.length > 1) {
-      kids.push(h('div', { class: 'card', style: 'padding:10px 12px' }, h('div', { class: 'muted', style: 'margin-bottom:8px' }, `${pendingOnly.length} موظف ملهمش أي تسجيل اليوم ده:`),
-        h('div', { class: 'btns' },
-          h('button', { class: 'btn sm primary', onclick: () => { for (const { e } of pendingOnly) { const t = shiftTimes(e.id, usualShift(e.id)); setManual(e.id, date, { in: t.start, out: t.end, absence: null }); } toast('اتسجّلوا حضور بمواعيد الشيفت'); render(); } }, 'كلهم حضور بمواعيد الشيفت'),
-          h('button', { class: 'btn sm danger', onclick: ev => confirmBtn(ev.currentTarget, 'متأكد؟ اضغط تاني', () => { for (const { e } of pendingOnly) setManual(e.id, date, { absence: 'absent' }); toast('اتسجّلوا غياب'); render(); }) }, 'كلهم غياب'))));
+      kids.push(h('div', { class: 'bulk' }, h('span', null, `${pendingOnly.length} ملهمش تسجيل:`),
+        h('button', { class: 'btn sm primary', onclick: () => { for (const { e } of pendingOnly) markPresent(e.id, date); toast('اتسجّلوا حضور بمواعيد الشيفت'); render(); } }, 'كلهم حضور'),
+        h('button', { class: 'btn sm danger', onclick: ev => confirmBtn(ev.currentTarget, 'متأكد؟', () => { for (const { e } of pendingOnly) setManual(e.id, date, { absence: 'absent' }); toast('اتسجّلوا غياب'); render(); }) }, 'كلهم غياب')));
     }
-    for (const x of rows) kids.push(dayCard(x.e, x.r, future));
+    const shown = all.filter(x => groups[UI.filter] ? groups[UI.filter](x.r) : true);
+    if (!shown.length) kids.push(h('div', { class: 'card empty' }, 'مفيش حد في الفلتر ده'));
+    else if (mode === 'timeline') kids.push(timeline(shown, future));
+    else kids.push(h('div', { class: 'list' }, shown.map(x => dayRow(x.e, x.r, future))));
     root.replaceChildren(...kids);
-    if (UI.focusEmp) { const el = $('emp-' + UI.focusEmp); UI.focusEmp = ''; if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1600); } }
   }
-  function chip(label, n, color) { return h('span', { class: 'chip' }, h('span', { class: 'dot', style: `background:${color}` }), label, h('b', null, n)); }
+  function markPresent(id, date) { const t = shiftTimes(id, usualShift(id)); setManual(id, date, { in: t.start, out: t.end, absence: null }); }
+  const statusLabel = (r, future) => future && r.code === 'pending' ? 'لسه' : r.code === 'pending' ? 'مستني' : r.code === 'missing' ? 'ناقص' : r.status.replace(' (يدوي)', '');
+  const pillCode = (r, future) => future && r.code === 'pending' ? 'future' : r.code;
+  function flagsOf(r, k) {
+    const out = [];
+    if (r.late) out.push(h('span', { class: 'flag r' }, 'تأخير ' + D(r.late)));
+    if (r.early) out.push(h('span', { class: 'flag r' }, 'بدري ' + D(r.early)));
+    if (r.overtime) out.push(h('span', { class: 'flag g' }, 'زيادة ' + D(r.overtime)));
+    if (r.permLate) out.push(h('span', { class: 'flag v' }, 'تأخير بإذن'));
+    if (r.permEarly) out.push(h('span', { class: 'flag v' }, 'انصراف بإذن'));
+    if (r.code === 'missing') out.push(h('span', { class: 'flag a' }, `ناقص ${r.missingField === 'in' ? 'الحضور' : 'الانصراف'}`));
+    const n = (S.notes[k] || []).length; if (n) out.push(h('span', { class: 'flag n' }, '📝 ' + n));
+    return out;
+  }
+  function rowSub(r) {
+    if (r.in != null || r.out != null) return [r.shift, `${C(r.in) || '—'} ← ${C(r.out) || '—'}`, r.worked != null ? D(r.worked) + ' س' : null].filter(Boolean).join(' · ');
+    if (r.code === 'pending') return r.date < (S.settings.deviceFrom || '') ? 'قبل تشغيل الجهاز — سجّل يدوي' : 'مفيش بصمات من الجهاز';
+    return r.status;
+  }
+  function quickActions(e, r) {
+    return h('div', { class: 'qa', onclick: ev => ev.stopPropagation() },
+      h('button', { class: 'btn sm', onclick: () => { markPresent(e.id, r.date); toast(`${e.name}: حاضر`); render(); } }, '✓ حاضر'),
+      h('button', { class: 'btn sm', style: 'color:var(--rose)', onclick: () => { setManual(e.id, r.date, { absence: 'absent' }); toast(`${e.name}: غياب`); render(); } }, 'غياب'),
+      h('button', { class: 'btn sm', style: 'color:var(--violet)', onclick: () => { setManual(e.id, r.date, { absence: 'excused' }); toast(`${e.name}: غياب بإذن`); render(); } }, 'بإذن'),
+      h('button', { class: 'btn sm', 'aria-label': 'تفاصيل', onclick: () => openEditor(e.id, r.date) }, '⋯'));
+  }
+  function dayRow(e, r, future) {
+    const k = e.id + '|' + r.date, need = !future && (r.code === 'pending' || r.code === 'missing');
+    return h('div', { class: 'li2' + (need ? ' need' : ''), role: 'button', tabindex: 0, onclick: () => openEditor(e.id, r.date) },
+      avatar(e.name, need ? 'warn' : ''),
+      h('div', { class: 'grow' }, h('div', { class: 't' }, h('span', { dir: 'auto' }, e.name), h('small', null, e.id)), h('div', { class: 's' }, rowSub(r)),
+        flagsOf(r, k).length ? h('div', { class: 'flags' }, flagsOf(r, k)) : null,
+        !future && r.code === 'pending' ? quickActions(e, r) : null),
+      h('span', { class: 'pill c-' + pillCode(r, future) }, statusLabel(r, future)));
+  }
 
-  function dayCard(e, r, future) {
-    const k = e.id + '|' + r.date, man = S.manual[k] || {}, perm = S.perms[k] || {};
-    const beforeDevice = S.settings.deviceFrom && r.date < S.settings.deviceFrom;
-    const isAbsence = ['absent', 'excused', 'leave'].includes(man.absence);
-    const hasTimes = r.in != null || r.out != null;
-    const mode = isAbsence ? man.absence : (hasTimes || UI.openPresent.has(k)) ? 'present' : '';
-    const code = future && r.code === 'pending' ? 'future' : r.code;
-    const statusTxt = future && r.code === 'pending' ? 'لسه' : r.status;
+  /* ---------- الخط الزمني (الوقت ماشي من اليمين للشمال) ---------- */
+  function timeline(rows, future) {
+    const sh = S.settings.shifts.map(s => ({ st: E.hm(s.start), en: E.hm(s.end) <= E.hm(s.start) ? E.hm(s.end) + 1440 : E.hm(s.end) }));
+    const winOf = (e, r) => {
+      const s = S.settings.shifts.find(x => x.id === r.shiftId) || (r.code === 'pending' || r.code === 'absent' || r.code === 'excused' || r.code === 'leave' ? usualShift(e.id) : null);
+      if (!s) return null; const st = E.hm(s.start), hrs = E.hoursOf(S.employees[e.id]);
+      let en = hrs ? st + hrs : E.hm(s.end); if (en <= st) en += 1440; return { st, en };
+    };
+    let lo = Math.min(...sh.map(s => s.st)), hi = Math.max(...sh.map(s => s.en));
+    for (const { r } of rows) { if (r.in != null) lo = Math.min(lo, r.in); if (r.out != null) hi = Math.max(hi, r.out); }
+    const t0 = Math.floor((lo - 30) / 60) * 60, t1 = Math.ceil((hi + 30) / 60) * 60, span = t1 - t0;
+    const P = t => ((t - t0) / span * 100).toFixed(2) + '%', W = (a, b) => (Math.max(0, b - a) / span * 100).toFixed(2) + '%';
+    const seg = (cls, a, b, extra) => h('i', { class: 'tl-' + cls, style: `right:${P(a)};width:${W(a, b)}` + (extra || '') });
+    const step = span > 14 * 60 ? 180 : 120, ticks = [];
+    for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) { const hh = Math.floor(t / 60) % 24; ticks.push(h('span', { style: `right:${P(t)}` }, String(hh % 12 || 12))); }
+    const head = h('div', { class: 'tl-row tl-head' }, h('span'), h('div', { class: 'tl-track' }, ticks));
+    const body = rows.map(({ e, r }) => {
+      const w = winOf(e, r), parts = [], need = !future && (r.code === 'pending' || r.code === 'missing');
+      if (w) parts.push(seg('win' + (need ? ' warn' : r.code === 'absent' ? ' bad' : ''), w.st, w.en));
+      if (r.in != null && r.out != null) {
+        parts.push(seg('on', r.in, r.out));
+        if (w && r.late) parts.push(seg('late', w.st, r.in));
+        if (w && r.permLate && r.lateExcused) parts.push(seg('perm', w.st, r.in));
+        if (w && r.early) parts.push(seg('late', r.out, w.en));
+        if (w && r.permEarly && r.earlyExcused) parts.push(seg('perm', r.out, w.en));
+        if (w && r.overtime) parts.push(seg('ot', w.en, r.out));
+      } else if (r.in != null) parts.push(seg('on fade-l', r.in, Math.min(r.in + 150, t1)));
+      else if (r.out != null) parts.push(seg('on fade-r', Math.max(r.out - 150, t0), r.out));
+      else if (['absent', 'excused', 'leave', 'off'].includes(r.code)) parts.push(h('em', { class: 'tl-lbl c-' + r.code }, r.status));
+      else if (!future) parts.push(h('em', { class: 'tl-lbl c-pending' }, 'مستني تسجيلك'));
+      const sub = r.worked != null ? [D(r.worked), r.overtime ? '+' + D(r.overtime) : null, r.late || r.early ? '−' + D((r.late || 0) + (r.early || 0)) : null].filter(Boolean).join(' · ') : statusLabel(r, future);
+      return h('div', { class: 'tl-row' + (need ? ' need' : ''), role: 'button', tabindex: 0, onclick: () => openEditor(e.id, r.date) },
+        h('div', { class: 'tl-name' }, h('b', { dir: 'auto' }, e.name), h('small', null, sub)), h('div', { class: 'tl-track' }, parts));
+    });
+    const lg = (cls, l) => h('span', null, h('i', { class: 'lg-' + cls }), l);
+    return h('div', { class: 'tl' }, head, body, h('div', { class: 'legend tl-legend' }, lg('win', 'الشيفت'), lg('on', 'موجود'), lg('late', 'تأخير/بدري'), lg('perm', 'بإذن'), lg('ot', 'زيادة')));
+  }
 
-    const devLine = r.punches ? `الجهاز: حضور ${C(r.devIn) || '—'} · انصراف ${C(r.devOut) || '—'}` : beforeDevice ? 'قبل تشغيل الجهاز — سجّل يدوي' : future ? '' : 'مفيش بصمات من الجهاز';
-    const metaBits = [`كود ${e.id}`, r.shift && mode === 'present' ? `شيفت ${r.shift}` : null, devLine].filter(Boolean);
-
-    const segBtn = (v, label) => h('button', { class: `s-${v}` + (mode === v ? ' on' : ''), onclick: () => {
-      if (v === 'present') { UI.openPresent.add(k); setManual(e.id, r.date, { absence: null }); }
-      else if (mode === v) { setManual(e.id, r.date, { absence: null }); UI.openPresent.delete(k); }
-      else { setManual(e.id, r.date, { absence: v, in: null, out: null }); UI.openPresent.delete(k); }
-      render();
-    } }, label);
-
+  /* ======================= شاشة التعديل (من تحت) ======================= */
+  function openEditor(id, date) { UI.editor = { id, date }; drawEditor(); if (!$('sheet').open) $('sheet').showModal(); }
+  $('sheet').addEventListener('close', () => { UI.editor = null; });
+  function drawEditor() {
+    const { id, date } = UI.editor, e0 = computeRange(date, date).find(x => x.id === id);
+    if (!e0 || !e0.rows.length) { $('sheet').close(); return; }
+    const e = e0, r = e0.rows[0], k = id + '|' + date, man = S.manual[k] || {}, perm = S.perms[k] || {}, future = date > todayKey();
+    const isAbs = ['absent', 'excused', 'leave'].includes(man.absence);
+    const mode = isAbs ? man.absence : (r.in != null || r.out != null || UI.openPresent.has(k)) ? 'present' : '';
+    const upd = () => { save(); render(); };
+    const segBtn = (v, l) => h('button', { class: `s-${v}` + (mode === v ? ' on' : ''), onclick: () => {
+      if (v === 'present') { UI.openPresent.add(k); setManual(id, date, { absence: null }); }
+      else if (mode === v) { setManual(id, date, { absence: null }); UI.openPresent.delete(k); }
+      else { setManual(id, date, { absence: v, in: null, out: null }); UI.openPresent.delete(k); }
+      upd();
+    } }, l);
     const body = [];
     if (mode === 'present') {
-      const timeInput = (field, val, dev, label) => {
-        const inp = h('input', { type: 'time', value: C(val), class: man[field] ? 'edited' : '', 'aria-label': label, onchange: ev => {
-          const v = ev.target.value;
-          setManual(e.id, r.date, { [field]: v && v !== C(dev) ? v : null, absence: null }); render();
-        } });
-        return h('div', null, h('label', { class: 'f' }, label), inp, man[field] && dev != null ? h('div', { class: 'dev' }, `الجهاز: ${C(dev)}`) : null);
-      };
-      body.push(h('div', { class: 'times' }, timeInput('in', r.in, r.devIn, 'الحضور'), timeInput('out', r.out, r.devOut, 'الانصراف')));
-      if (r.worked != null) {
-        body.push(h('div', { class: 'stats' },
-          h('div', { class: 'stat' }, h('b', null, D(r.worked)), h('span', null, 'ساعات')),
-          h('div', { class: 'stat' + (r.late ? ' bad' : '') }, h('b', null, D(r.late)), h('span', null, 'تأخير')),
-          h('div', { class: 'stat' + (r.early ? ' bad' : '') }, h('b', null, D(r.early)), h('span', null, 'بدري')),
-          h('div', { class: 'stat' + (r.overtime ? ' good' : '') }, h('b', null, D(r.overtime)), h('span', null, 'زيادة'))));
-      } else if (r.code === 'missing') {
-        body.push(h('div', { class: 'warn-line' }, `ناقص وقت ${r.missingField === 'in' ? 'الحضور' : 'الانصراف'} — اكتبه فوق`));
-      }
-      const shiftSel = h('select', { 'aria-label': 'الشيفت', onchange: ev => { setManual(e.id, r.date, { shift: ev.target.value || null }); render(); } },
+      const ti = (f, val, dev, l) => h('div', null, h('label', { class: 'f' }, l),
+        h('input', { type: 'time', value: C(val), class: man[f] ? 'edited' : '', 'aria-label': l, onchange: ev => { const v = ev.target.value; setManual(id, date, { [f]: v && v !== C(dev) ? v : null, absence: null }); upd(); } }),
+        man[f] && dev != null ? h('div', { class: 'dev' }, `الجهاز: ${C(dev)}`) : null);
+      body.push(h('div', { class: 'times' }, ti('in', r.in, r.devIn, 'الحضور'), ti('out', r.out, r.devOut, 'الانصراف')));
+      if (r.worked != null) body.push(h('div', { class: 'stats' },
+        h('div', { class: 'stat' }, h('b', null, D(r.worked)), h('span', null, 'ساعات')),
+        h('div', { class: 'stat' + (r.late ? ' bad' : '') }, h('b', null, D(r.late)), h('span', null, 'تأخير')),
+        h('div', { class: 'stat' + (r.early ? ' bad' : '') }, h('b', null, D(r.early)), h('span', null, 'بدري')),
+        h('div', { class: 'stat' + (r.overtime ? ' good' : '') }, h('b', null, D(r.overtime)), h('span', null, 'زيادة'))));
+      else if (r.code === 'missing') body.push(h('div', { class: 'warn-line' }, `ناقص وقت ${r.missingField === 'in' ? 'الحضور' : 'الانصراف'} — اكتبه فوق`));
+      const shiftSel = h('select', { 'aria-label': 'الشيفت', onchange: ev => { setManual(id, date, { shift: ev.target.value || null }); upd(); } },
         h('option', { value: '' }, 'شيفت تلقائي' + (r.shift && !man.shift ? ` (${r.shift})` : '')), ...S.settings.shifts.map(s => h('option', { value: s.id }, `${s.name} ${s.start}–${s.end}`)));
       shiftSel.value = man.shift || '';
-      const tools = [shiftSel];
-      if (r.in == null || r.out == null) tools.push(h('button', { class: 'btn ghost sm', onclick: () => {
-        const t = shiftTimes(e.id, S.settings.shifts.find(x => x.id === man.shift) || usualShift(e.id));
-        setManual(e.id, r.date, { in: r.in == null ? t.start : man.in, out: r.out == null ? t.end : man.out }); render();
-      } }, 'املا بمواعيد الشيفت'));
-      body.push(h('div', { class: 'row-tools' }, ...tools));
-      const tg = (f, label) => h('button', { class: 'tg' + (perm[f] ? ' on' : ''), onclick: () => {
-        const p = Object.assign({}, S.perms[k] || {}, { [f]: !perm[f] });
-        if (p.late || p.early) S.perms[k] = p; else delete S.perms[k];
-        save(); render();
-      } }, (perm[f] ? '✓ ' : '+ ') + label);
+      body.push(h('div', { class: 'row-tools' }, shiftSel, r.in == null || r.out == null ? h('button', { class: 'btn ghost sm', onclick: () => {
+        const t = shiftTimes(id, S.settings.shifts.find(x => x.id === man.shift) || usualShift(id));
+        setManual(id, date, { in: r.in == null ? t.start : man.in, out: r.out == null ? t.end : man.out }); upd();
+      } }, 'املا بمواعيد الشيفت') : null));
+      const tg = (f, l) => h('button', { class: 'tg' + (perm[f] ? ' on' : ''), onclick: () => {
+        const p = Object.assign({}, S.perms[k] || {}, { [f]: !perm[f] }); if (p.late || p.early) S.perms[k] = p; else delete S.perms[k]; upd();
+      } }, (perm[f] ? '✓ ' : '+ ') + l);
       body.push(h('div', { class: 'toggles' }, tg('late', 'تأخير بإذن'), tg('early', 'انصراف بدري بإذن')));
     }
-    const hasManual = !!S.manual[k];
     const notes = S.notes[k] || [];
-    body.push(h('div', { class: 'notes' },
-      notes.map((n, i) => h('div', { class: 'note-line', dir: 'auto' }, n.type && n.type !== 'note' ? h('span', { class: 'muted' }, QLABEL[n.type] + ': ') : null, n.text,
-        h('button', { class: 'note-x', 'aria-label': 'امسح الملاحظة', onclick: ev => confirmBtn(ev.currentTarget, 'امسح؟', () => { notes.splice(i, 1); if (!notes.length) delete S.notes[k]; save(); render(); }) }, '×'))),
-      h('button', { class: 'btn ghost sm', onclick: () => quickSheet({ ids: [e.id], date: r.date, type: 'note' }) }, '+ ملاحظة')));
-    return h('div', { class: 'emp' + (!future && (r.code === 'pending' || r.code === 'missing') ? ' need' : ''), id: 'emp-' + e.id },
-      h('div', { class: 'emp-head' },
-        h('div', null, h('div', { class: 'emp-name', dir: 'auto' }, e.name), h('div', { class: 'emp-meta' }, metaBits.join(' · '))),
-        h('span', { class: 'pill c-' + code }, statusTxt)),
+    const devLine = r.punches ? `الجهاز: ${C(r.devIn) || '—'} ← ${C(r.devOut) || '—'}` : (date < (S.settings.deviceFrom || '') ? 'قبل تشغيل الجهاز' : 'مفيش بصمات من الجهاز');
+    $('sheet-in').replaceChildren(
+      h('div', { class: 'grab' }),
+      h('div', { class: 'ed-head' }, avatar(e.name), h('div', { class: 'grow' }, h('div', { class: 't', dir: 'auto' }, e.name, h('small', null, ' كود ' + id)), h('div', { class: 's' }, `${longDate(date)} · ${devLine}`)),
+        h('span', { class: 'pill c-' + pillCode(r, future) }, statusLabel(r, future))),
       h('div', { class: 'seg' }, segBtn('present', 'حاضر'), segBtn('absent', 'غياب'), segBtn('excused', 'غياب بإذن'), segBtn('leave', 'إجازة')),
       ...body,
-      hasManual && r.punches ? h('div', { style: 'margin-top:6px;text-align:left' }, h('button', { class: 'btn ghost sm', onclick: () => { delete S.manual[k]; UI.openPresent.delete(k); save(); render(); toast('رجع زي بيانات الجهاز'); } }, 'رجّع زي الجهاز')) : null);
+      h('div', { class: 'notes' }, notes.map((n, i) => h('div', { class: 'note-line', dir: 'auto' }, n.type && n.type !== 'note' ? h('span', { class: 'muted' }, QLABEL[n.type] + ': ') : null, n.text,
+        h('button', { class: 'note-x', 'aria-label': 'امسح الملاحظة', onclick: ev => confirmBtn(ev.currentTarget, 'امسح؟', () => { notes.splice(i, 1); if (!notes.length) delete S.notes[k]; upd(); }) }, '×')))),
+      h('div', { class: 'btns', style: 'margin-top:10px' },
+        h('button', { class: 'btn', style: 'flex:1', onclick: () => quickSheet({ ids: [id], date, type: 'note' }) }, '+ ملاحظة'),
+        S.manual[k] && r.punches ? h('button', { class: 'btn', style: 'flex:1', onclick: () => { delete S.manual[k]; UI.openPresent.delete(k); upd(); toast('رجع زي بيانات الجهاز'); } }, 'رجّع زي الجهاز') : null),
+      h('div', { class: 'btns', style: 'margin-top:8px' },
+        h('button', { class: 'btn primary', style: 'flex:2', onclick: () => $('sheet').close() }, 'تم'),
+        h('button', { class: 'btn', style: 'flex:1', onclick: () => { $('sheet').close(); openProfile(id); } }, 'ملف الموظف')));
   }
+
+  /* ======================= شبكة الشهر ======================= */
+  function renderGrid() {
+    const root = $('tab-grid'), m = UI.gmonth, rng = monthRange(m), today = todayKey();
+    $('subtitle').textContent = 'كل الموظفين × كل الأيام';
+    const shiftM = d => { const [y, mo] = m.split('-').map(Number), t = new Date(y, mo - 1 + d, 1); UI.gmonth = `${t.getFullYear()}-${pad(t.getMonth() + 1)}`; UI.gridSel = null; render(); };
+    const kids = [navBar(monthLabel(m), m === monthOf(today) ? 'الشهر الحالي' : '', 'month', m, v => { UI.gmonth = v; UI.gridSel = null; render(); }, () => shiftM(-1), () => shiftM(1))];
+    if (rng.future || !sortedIds().length) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, rng.future ? 'الشهر ده لسه مجاش' : 'لسه مفيش موظفين'))); return; }
+    const all = computeRange(rng.from, rng.end);
+    if (!all.length) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'مفيش موظفين كانوا شغالين الشهر ده'))); return; }
+    const gm = UI.gridMode, mb = (v, l) => h('button', { class: 'fc' + (gm === v ? ' on' : ''), onclick: () => { UI.gridMode = v; render(); } }, l);
+    kids.push(h('div', { class: 'fil', style: 'margin-bottom:10px' }, mb('status', 'الحالة'), mb('late', 'التأخير'), mb('hours', 'الساعات')));
+    const n = +rng.end.slice(8), days = Array.from({ length: n }, (_, i) => `${m}-${pad(i + 1)}`);
+    const cells = [h('div', { class: 'g-name g-h' })];
+    for (const k of days) cells.push(h('div', { class: 'g-h' + (k === today ? ' today' : ''), id: k === today ? 'g-today' : null }, h('small', null, SHORT_DAYS[E.weekday(k)].charAt(0)), +k.slice(8)));
+    for (const e of all) {
+      cells.push(h('button', { class: 'g-name', dir: 'auto', onclick: () => openProfile(e.id) }, e.name));
+      const byDate = Object.fromEntries(e.rows.map(r => [r.date, r]));
+      for (const k of days) {
+        const r = byDate[k], sel = UI.gridSel && UI.gridSel.id === e.id && UI.gridSel.date === k;
+        if (!r) { cells.push(h('div', { class: 'gc g-out' })); continue; }
+        const fut = k > today; let cls = 'gc', style = '', label = '';
+        if (fut) cls += r.code === 'pending' ? ' g-fut' : ' c-' + r.code;
+        else if (gm === 'status') cls += ' gs-' + r.code;
+        else if (gm === 'late') { const v = (r.late || 0) + (r.early || 0); if (r.code === 'off') cls += ' gs-off'; else if (r.code === 'pending' || r.code === 'missing') cls += ' gs-pending'; else if (v) { style = `background:rgba(194,72,95,${Math.min(1, .3 + v / 60 * .7).toFixed(2)})`; label = String(v); } else cls += ' g-zero'; }
+        else { if (r.code === 'off') cls += ' gs-off'; else if (r.code === 'pending' || r.code === 'missing') cls += ' gs-pending'; else if (r.worked) { const req = r.required || 480; style = `background:rgba(30,140,110,${Math.min(1, .2 + r.worked / req * .8).toFixed(2)})`; label = String(Math.round(r.worked / 60)); } else cls += ' g-zero'; }
+        if (sel) cls += ' sel';
+        cells.push(h('button', { class: cls, style, title: `${e.name} — ${longDate(k)}: ${r.status}`, onclick: () => { UI.gridSel = { id: e.id, date: k }; render(); } }, label));
+      }
+    }
+    const grid = h('div', { class: 'gwrap' }, h('div', { class: 'gtable', style: `grid-template-columns:96px repeat(${n},26px)` }, cells));
+    kids.push(grid);
+    const lg = (cls, l) => h('span', null, h('i', { class: cls }), l);
+    kids.push(gm === 'status' ? h('div', { class: 'legend' }, lg('gs-present', 'حاضر'), lg('gs-excused', 'بإذن/إجازة'), lg('gs-absent', 'غياب'), lg('gs-pending', 'ناقص'), lg('gs-off', 'إجازة أسبوعية'))
+      : gm === 'late' ? h('div', { class: 'legend' }, 'الأغمق = تأخير وبدري أكتر (الرقم بالدقايق)') : h('div', { class: 'legend' }, 'الأغمق = ساعات أكتر (الرقم بالساعات)'));
+    if (UI.gridSel) {
+      const e = all.find(x => x.id === UI.gridSel.id), r = e && e.rows.find(x => x.date === UI.gridSel.date);
+      if (r) {
+        const fut = r.date > today;
+        kids.push(h('div', { class: 'card sel-card' },
+          h('div', { class: 'ed-head' }, avatar(e.name), h('div', { class: 'grow' }, h('div', { class: 't', dir: 'auto' }, e.name), h('div', { class: 's' }, `${longDate(r.date)} · ${rowSub(r)}`)), h('span', { class: 'pill c-' + pillCode(r, fut) }, statusLabel(r, fut))),
+          flagsOf(r, e.id + '|' + r.date).length ? h('div', { class: 'flags' }, flagsOf(r, e.id + '|' + r.date)) : null,
+          !fut && r.code === 'pending' ? quickActions(e, r) : h('div', { class: 'btns', style: 'margin-top:10px' }, h('button', { class: 'btn primary', style: 'flex:1', onclick: () => openEditor(e.id, r.date) }, 'تعديل'), h('button', { class: 'btn', onclick: () => openProfile(e.id) }, 'ملف الموظف'))));
+      }
+    }
+    root.replaceChildren(...kids);
+    const t = $('g-today') || grid.querySelector('.sel');
+    if (t) { const gw = grid; const off = t.offsetLeft - gw.clientWidth / 2; gw.scrollLeft = off; }
+  }
+
+  /* ======================= تقفيل الشهر (حالة حالة) ======================= */
+  function closeItems(m) {
+    const r0 = monthRange(m); if (r0.future) return [];
+    const out = [];
+    for (const e of computeRange(r0.from, r0.to)) for (const r of e.rows) {
+      const k = e.id + '|' + r.date;
+      if (r.code === 'pending') out.push({ e, r, kind: 'pending' });
+      else if (r.code === 'missing') out.push({ e, r, kind: 'missing' });
+      if (r.late > 0 && !S.reviewed[k + '|late']) out.push({ e, r, kind: 'late' });
+      if (r.early > 0 && !S.reviewed[k + '|early']) out.push({ e, r, kind: 'early' });
+    }
+    return out.sort((a, b) => a.r.date.localeCompare(b.r.date) || a.e.id.localeCompare(b.e.id, undefined, { numeric: true }));
+  }
+  function closeFlow(m) {
+    const items = closeItems(m); if (!items.length) { toast('مفيش حاجة ناقصة ✓'); return; }
+    let i = 0; const done = new Set();
+    UI.editor = null;
+    const next = () => { done.add(i); i++; draw(); };
+    const draw = () => {
+      $('sheet').classList.add('full');
+      if (i >= items.length) {
+        const left = closeItems(m).length;
+        $('sheet-in').replaceChildren(h('div', { class: 'cf-done' }, h('div', { class: 'cf-check' }, left ? '…' : '✓'), h('b', null, left ? `فاضل ${left} حاجة اتخطيتها` : `${monthLabel(m)} اتقفل ✓`),
+          h('p', { class: 'muted' }, left ? 'تقدر ترجعلهم في أي وقت من زرار "ابدأ".' : 'كل الأيام متسجلة وكل التأخير اتراجع. التقرير جاهز.'),
+          h('div', { class: 'btns', style: 'justify-content:center' }, h('button', { class: 'btn primary', onclick: () => { $('sheet').close(); UI.month = m; UI.rmode = 'month'; go('month'); } }, 'روح للتقرير'), h('button', { class: 'btn', onclick: () => $('sheet').close() }, 'اقفل'))));
+        render(); return;
+      }
+      const it = items[i], { e, r } = it, k = e.id + '|' + r.date;
+      const note = h('textarea', { rows: 1, dir: 'auto', placeholder: '📝 السبب أو ملاحظة (اختياري)' });
+      const withNote = (type) => { const t = note.value.trim(); if (t) (S.notes[k] = S.notes[k] || []).push({ text: t, type, at: new Date().toISOString() }); };
+      const big = (l, cls, fn) => h('button', { class: 'cf-btn ' + cls, onclick: () => { fn(); save(); next(); } }, l);
+      let msg, actions;
+      const s = S.settings.shifts.find(x => x.id === r.shiftId) || usualShift(e.id), t = shiftTimes(e.id, s);
+      if (it.kind === 'pending') {
+        msg = [h('div', { class: 'cf-msg' }, 'مفيش أي تسجيل لليوم ده'), h('div', { class: 'muted' }, r.date < (S.settings.deviceFrom || '') ? 'قبل تشغيل الجهاز' : 'مفيش بصمات من الجهاز')];
+        actions = h('div', { class: 'cf-grid' },
+          big(`حاضر ${t.start} لـ ${t.end}`, 'teal', () => { markPresent(e.id, r.date); withNote('note'); }),
+          big('غياب', 'rose', () => { setManual(e.id, r.date, { absence: 'absent' }); withNote('absent'); }),
+          big('غياب بإذن', 'violet', () => { setManual(e.id, r.date, { absence: 'excused' }); withNote('excused'); }),
+          big('إجازة', 'violet', () => { setManual(e.id, r.date, { absence: 'leave' }); withNote('leave'); }));
+      } else if (it.kind === 'missing') {
+        const f = r.missingField, inp = h('input', { type: 'time', value: f === 'in' ? t.start : t.end, 'aria-label': 'الوقت' });
+        msg = [h('div', { class: 'cf-msg' }, `ناقص وقت ${f === 'in' ? 'الحضور' : 'الانصراف'}`), h('div', { class: 'muted' }, f === 'in' ? `مشي ${C(r.out)}` : `حضر ${C(r.in)}`)];
+        actions = h('div', null, h('div', { style: 'max-width:200px;margin:0 auto 10px' }, inp),
+          h('div', { class: 'cf-grid' }, big('حفظ الوقت', 'teal', () => { setManual(e.id, r.date, { [f]: inp.value || (f === 'in' ? t.start : t.end) }); withNote('note'); }),
+            big('غياب', 'rose', () => { setManual(e.id, r.date, { absence: 'absent', in: null, out: null }); withNote('absent'); })));
+      } else {
+        const late = it.kind === 'late';
+        msg = [h('div', { class: 'cf-msg' }, late ? 'اتأخر ' : 'مشي ', h('b', { style: 'color:var(--rose)' }, D(late ? r.late : r.early) + (late ? '' : ' بدري'))),
+          h('div', { class: 'muted' }, late ? `حضر ${C(r.in)} بدل ${t.start}` : `انصراف ${C(r.out)} بدل ${t.end}`)];
+        actions = h('div', { class: 'cf-grid' },
+          big('بإذن', 'violet', () => { S.perms[k] = Object.assign({}, S.perms[k] || {}, { [it.kind]: true }); withNote(it.kind); }),
+          big('بدون إذن', 'rose', () => { S.reviewed[k + '|' + it.kind] = 1; withNote('note'); }));
+      }
+      $('sheet-in').replaceChildren(
+        h('div', { class: 'cf-top' }, h('b', null, `تقفيل ${monthLabel(m)}`), h('span', null, `${i + 1} من ${items.length}`), h('button', { class: 'note-x', 'aria-label': 'اقفل', onclick: () => $('sheet').close() }, '×')),
+        h('div', { class: 'cf-prog' }, h('i', { style: `width:${(i / items.length * 100).toFixed(1)}%` })),
+        h('div', { class: 'cf-card' }, avatar(e.name, 'big'), h('div', { class: 'cf-name', dir: 'auto' }, e.name), h('div', { class: 'muted' }, `${longDate(r.date)}${r.shift ? ' · شيفت ' + r.shift : ''}`), ...msg, actions, h('div', { style: 'margin-top:10px' }, note)),
+        h('div', { class: 'cf-nav' }, h('button', { class: 'btn ghost', disabled: i === 0, onclick: () => { i = Math.max(0, i - 1); draw(); } }, '→ اللي قبله'), h('button', { class: 'btn ghost', onclick: () => { i++; draw(); } }, 'تخطّي ←')),
+        items[i + 1] ? h('div', { class: 'muted', style: 'text-align:center;margin-top:6px' }, `الجاي: ${items[i + 1].e.name} — ${longDate(items[i + 1].r.date)}`) : null);
+    };
+    draw(); if (!$('sheet').open) $('sheet').showModal();
+  }
+  $('sheet').addEventListener('close', () => $('sheet').classList.remove('full'));
 
   /* ======================= شاشة التقارير ======================= */
   function reportRange() {
     const today = todayKey();
     if (UI.rmode === 'range') {
       let { from, to } = UI.range; if (from > to) [from, to] = [to, from];
-      return { from, to: to > today ? today : to, end: to, future: from > today, label: `من ${fmtDate(from)} لـ ${fmtDate(to)}`, tag: `${from}_to_${to}` };
+      return { from, to: to > today ? today : to, end: to, future: from > today, label: `من ${fmtDate(from)} لـ ${fmtDate(to)}`, tag: `${from}_to_${to}`, custom: true };
     }
     return Object.assign(monthRange(UI.month), { label: monthLabel(UI.month), tag: UI.month });
   }
+  function periodSheet() {
+    const today = todayKey(), lastM = monthOf(addDays(monthOf(today) + '-01', -1));
+    const pick = (fn) => { fn(); $('sheet').close(); render(); };
+    const opt = (l, sub, fn, on) => h('button', { class: 'li' + (on ? ' on' : ''), onclick: () => pick(fn) }, h('span', { class: 'grow' }, h('div', { class: 't' }, l), sub ? h('div', { class: 's' }, sub) : null));
+    const mIn = h('input', { type: 'month', value: UI.month }), fIn = h('input', { type: 'date', value: UI.range.from }), tIn = h('input', { type: 'date', value: UI.range.to });
+    openSheet([h('div', { class: 'grab' }), h('h2', null, 'الفترة'),
+      h('div', { class: 'list' },
+        opt('الشهر ده', monthLabel(monthOf(today)), () => { UI.rmode = 'month'; UI.month = monthOf(today); }, UI.rmode === 'month' && UI.month === monthOf(today)),
+        opt('الشهر اللي فات', monthLabel(lastM), () => { UI.rmode = 'month'; UI.month = lastM; }, UI.rmode === 'month' && UI.month === lastM),
+        opt('آخر 7 أيام', null, () => { UI.rmode = 'range'; UI.range = { from: addDays(today, -6), to: today }; }),
+        opt('آخر 30 يوم', null, () => { UI.rmode = 'range'; UI.range = { from: addDays(today, -29), to: today }; })),
+      h('div', { class: 'sec-title' }, 'شهر معيّن'),
+      h('div', { class: 'btns' }, h('div', { style: 'flex:1' }, mIn), h('button', { class: 'btn', onclick: () => mIn.value && pick(() => { UI.rmode = 'month'; UI.month = mIn.value; }) }, 'عرض')),
+      h('div', { class: 'sec-title' }, 'من يوم لـ يوم'),
+      h('div', { class: 'grid2' }, fIn, tIn),
+      h('button', { class: 'btn primary block', style: 'margin-top:10px', onclick: () => fIn.value && tIn.value && pick(() => { UI.rmode = 'range'; UI.range = { from: fIn.value, to: tIn.value }; }) }, 'عرض الفترة')]);
+  }
+  function empPicker(ids, current, onPick) {
+    const q = h('input', { type: 'search', placeholder: '🔍 ابحث بالاسم أو الكود', dir: 'auto' }), box = h('div', { class: 'list', style: 'max-height:55vh;overflow:auto' });
+    const draw = () => {
+      const hits = ids.filter(id => matchEmp(id, q.value));
+      box.replaceChildren(
+        !q.value ? h('button', { class: 'li' + (!current ? ' on' : ''), onclick: () => { $('sheet').close(); onPick(''); } }, h('span', { class: 'avatar' }, '٭'), h('span', { class: 'grow t' }, 'كل الموظفين')) : null,
+        ...hits.map(id => h('button', { class: 'li' + (current === id ? ' on' : ''), onclick: () => { $('sheet').close(); onPick(id); } }, avatar(empName(id)), h('span', { class: 'grow' }, h('div', { class: 't' }, hl(empName(id), q.value)), h('div', { class: 's' }, hl('كود ' + id, q.value))))));
+    };
+    q.addEventListener('input', draw); draw();
+    openSheet([h('div', { class: 'grab' }), h('h2', null, 'اختار موظف'), q, h('div', { style: 'height:8px' }), box]);
+    setTimeout(() => q.focus(), 150);
+  }
   function renderMonth() {
-    const root = $('tab-month'), today = todayKey();
-    const rmBtn = (v, l) => h('button', { class: UI.rmode === v ? 'on' : '', onclick: () => { UI.rmode = v; render(); } }, l);
-    const kids = [h('div', { class: 'seg two', style: 'margin:0 0 10px' }, rmBtn('month', 'شهر'), rmBtn('range', 'فترة معيّنة'))];
-    if (UI.rmode === 'range') {
-      const dIn = (f, l) => h('div', null, h('label', { class: 'f' }, l), h('input', { type: 'date', value: UI.range[f], onchange: ev => { if (ev.target.value) { UI.range[f] = ev.target.value; render(); } } }));
-      const quick = (l, from, to) => h('button', { class: 'btn sm', onclick: () => { UI.range = { from, to }; render(); } }, l);
-      kids.push(h('div', { class: 'grid2', style: 'margin-bottom:8px' }, dIn('from', 'من'), dIn('to', 'لـ')),
-        h('div', { class: 'btns', style: 'margin-bottom:12px' }, quick('آخر 7 أيام', addDays(today, -6), today), quick('آخر 30 يوم', addDays(today, -29), today), quick('من أول الشهر', monthOf(today) + '-01', today)));
-    } else {
-      const m = UI.month, shiftM = d => { const [y, mo] = m.split('-').map(Number), t = new Date(y, mo - 1 + d, 1); UI.month = `${t.getFullYear()}-${pad(t.getMonth() + 1)}`; render(); };
-      kids.push(navBar(monthLabel(m), m === monthOf(today) ? 'الشهر الحالي' : 'شهر قديم', 'month', m, v => { UI.month = v; render(); }, () => shiftM(-1), () => shiftM(1)));
-    }
-    const rng = reportRange();
-    $('subtitle').textContent = 'تقرير ' + rng.label;
-    if (rng.future) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'الفترة دي لسه مجتش'))); return; }
-    const all = computeRange(rng.from, rng.to);
-    if (!all.length) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'مفيش بيانات للفترة دي'), 'مفيش موظفين كانوا شغالين فيها.')); return; }
-
-    const pend = []; for (const e of all) for (const r of e.rows) if (r.code === 'pending' || r.code === 'missing') pend.push(r.date);
-    pend.sort();
-    if (pend.length) kids.push(h('div', { class: 'banner' }, h('span', null, `${pend.length} تسجيل ناقص — التقرير مش هيبقى كامل`), h('button', { class: 'btn sm', onclick: () => goDay(pend[0]) }, 'كمّل التسجيل')));
-    else kids.push(h('div', { class: 'banner ok' }, h('span', null, rng.to < rng.end ? `كل الأيام لحد ${fmtDate(rng.to)} متسجلة` : 'الفترة متسجّلة كاملة ✓')));
-    const rv = reviewItems(rng.from, rng.to).length;
-    if (rv) kids.push(h('div', { class: 'banner' }, h('span', null, `${rv} تأخير/انصراف بدري محتاج تقول بإذن ولا لأ`), h('button', { class: 'btn sm', onclick: () => reviewSheet(rng.from, rng.to) }, 'راجع')));
-
+    const root = $('tab-month'), rng = reportRange();
+    $('subtitle').textContent = '';
     const v = S.view;
+    if (!['summary', 'detail', 'charts', 'log'].includes(v.type)) v.type = 'summary';
+    const all = rng.future ? [] : computeRange(rng.from, rng.to);
     if (v.emp && !all.some(e => e.id === v.emp)) v.emp = '';
+    const dd = (small, val, fn) => h('button', { class: 'dd', onclick: fn }, h('span', null, h('small', null, small), val), h('span', { html: ICON.chev, style: 'display:inline-flex;transform:rotate(-90deg)' }));
+    const kids = [h('div', { class: 'fb' }, dd('الفترة', rng.label, periodSheet), dd('الموظف', v.emp ? empName(v.emp) : 'كل الموظفين', () => empPicker(all.map(e => e.id), v.emp, id => { v.emp = id; save(); render(); })))];
+    if (rng.future) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'الفترة دي لسه مجتش'))); return; }
+    if (!all.length) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'مفيش بيانات للفترة دي'))); return; }
     const list = v.emp ? all.filter(e => e.id === v.emp) : all;
+    // محتاج انتباهك
+    const pend = []; for (const e of list) for (const r of e.rows) if (r.code === 'pending' || r.code === 'missing') pend.push(r.date);
+    pend.sort();
+    const rv = reviewItems(rng.from, rng.to).filter(x => !v.emp || x.e.id === v.emp).length;
+    if (pend.length || rv) kids.push(h('div', { class: 'attn' }, h('b', null, 'محتاج انتباهك'),
+      pend.length ? h('div', { class: 'attn-r' }, h('span', null, h('i', { class: 'dot', style: 'background:var(--c4)' }), `${pend.length} تسجيل ناقص`), h('button', { class: 'btn sm', style: 'background:var(--amber-soft);color:var(--amber-ink)', onclick: () => UI.rmode === 'month' ? closeFlow(UI.month) : goDay(pend[0]) }, 'كمّل')) : null,
+      rv ? h('div', { class: 'attn-r' }, h('span', null, h('i', { class: 'dot', style: 'background:var(--c2)' }), `${rv} تأخير/بدري: بإذن ولا لأ؟`), h('button', { class: 'btn sm', style: 'background:var(--violet-soft);color:var(--violet)', onclick: () => reviewSheet(rng.from, rng.to) }, 'راجع')) : null));
+    else kids.push(h('div', { class: 'banner ok' }, h('span', null, rng.to < rng.end ? `كل الأيام لحد ${fmtDate(rng.to)} متسجلة ✓` : 'الفترة متسجّلة كاملة ✓')));
     const tot = f => list.reduce((a, e) => a + (e.summary[f] || 0), 0);
     kids.push(h('div', { class: 'totals' },
       h('div', { class: 'total' }, h('b', null, D(tot('worked')).split(':')[0]), h('span', null, 'ساعة شغل')),
       h('div', { class: 'total' }, h('b', { style: 'color:var(--rose)' }, tot('absent')), h('span', null, 'يوم غياب')),
       h('div', { class: 'total' }, h('b', { style: 'color:var(--rose)' }, D(tot('late'))), h('span', null, 'تأخير')),
       h('div', { class: 'total' }, h('b', { style: 'color:var(--green)' }, D(tot('overtime'))), h('span', null, 'زيادة'))));
-
-    const empSel = h('select', { 'aria-label': 'الموظف', onchange: ev => { v.emp = ev.target.value; save(); render(); } },
-      h('option', { value: '' }, 'كل الموظفين'), ...all.map(e => h('option', { value: e.id }, e.name)));
-    empSel.value = v.emp;
-    const typeBtn = (t, l) => h('button', { class: v.type === t ? 'on' : '', onclick: () => { v.type = t; save(); render(); } }, l);
-    kids.push(h('div', { class: 'ctrls' }, h('div', { class: 'seg four' }, typeBtn('summary', 'شامل'), typeBtn('detail', 'مفصّل'), typeBtn('charts', 'رسوم'), typeBtn('log', 'أذونات')), empSel));
-
+    const tab = (t, l) => h('button', { class: v.type === t ? 'on' : '', onclick: () => { v.type = t; save(); render(); } }, l);
+    const canX = v.type === 'summary' || v.type === 'detail';
+    kids.push(h('div', { class: 'tabs' }, tab('summary', 'ملخص'), tab('detail', 'تفاصيل'), tab('charts', 'رسوم'), tab('log', 'أذونات'),
+      canX ? h('button', { class: 'xl', 'aria-label': 'تحميل Excel', html: ICON.xls + '<span>Excel</span>', onclick: () => exportExcel(list, rng) }) : null));
     if (v.type === 'log') kids.push(...logView(list));
     else if (v.type === 'charts') kids.push(...(v.emp ? empCharts(list[0], rng) : teamCharts(list, rng)));
-    else {
-      if (v.type === 'summary') for (const e of list) kids.push(monthRow(e));
-      else for (const e of list) kids.push(...detailTable(e));
-      kids.push(h('button', { class: 'btn primary block', style: 'margin-top:6px', onclick: () => exportExcel(list, rng) }, h('span', { html: ICON.xls, style: 'display:inline-flex' }), `تحميل Excel — ${v.type === 'summary' ? 'شامل' : 'مفصّل'}${v.emp ? ' — ' + list[0].name : ''}`));
-    }
+    else if (v.type === 'summary') kids.push(summaryTable(list));
+    else for (const e of list) kids.push(...detailTable(e));
     root.replaceChildren(...kids);
   }
+  function summaryTable(list) {
+    const max = Math.max(...list.map(e => e.summary.worked), 1);
+    const sorted = [...list].sort((a, b) => b.summary.worked - a.summary.worked);
+    return h('div', { class: 'list' },
+      h('div', { class: 'st-row st-h' }, h('span', null, 'الموظف'), h('span', null, 'ساعات'), h('span', null, 'تأخير'), h('span', null, 'غياب'), h('span', null, 'زيادة')),
+      sorted.map(e => { const s = e.summary; return h('button', { class: 'st-row', onclick: () => { S.view.emp = e.id; S.view.type = 'detail'; save(); render(); window.scrollTo(0, 0); } },
+        h('span', { class: 'st-n' }, h('b', { dir: 'auto' }, e.name), s.pending + s.missing ? h('small', { style: 'color:var(--amber-ink)' }, `مستني ${s.pending + s.missing}`) : h('small', null, `حضور ${s.present + s.offwork} يوم`)),
+        h('span', { class: 'st-h2' }, h('i', { style: `width:${(s.worked / max * 100).toFixed(0)}%` }), D(s.worked)),
+        h('span', { class: s.late ? 'bad' : 'mut' }, D(s.late)), h('span', { class: s.absent ? 'bad' : 'mut' }, s.absent), h('span', { class: s.overtime ? 'good' : 'mut' }, D(s.overtime))); }));
+  }
 
+  /* ======================= البحث ======================= */
+  const normAr = s => String(s || '').toLowerCase().replace(/[ً-ْـ]/g, '').replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي');
+  function matchEmp(id, q) { q = normAr(q).trim(); if (!q) return true; return normAr(empName(id)).includes(q) || String(id).includes(q); }
+  function hl(text, q) { // يعلّم على الجزء اللي بيطابق البحث
+    q = normAr(q).trim(); if (!q) return text;
+    const map = [], chars = [...text]; let n = '';
+    chars.forEach((c, i) => { const nc = normAr(c); for (const x of nc) { n += x; map.push(i); } });
+    const at = n.indexOf(q); if (at < 0) return text;
+    const a = map[at], b = map[at + q.length - 1] + 1;
+    return h('span', null, chars.slice(0, a).join(''), h('mark', null, chars.slice(a, b).join('')), chars.slice(b).join(''));
+  }
+  function openSearch() {
+    const today = todayKey(), tm = monthRange(monthOf(today));
+    const dayRes = Object.fromEntries(computeRange(today, today).filter(e => e.rows.length).map(e => [e.id, e.rows[0]]));
+    const monRes = Object.fromEntries(computeRange(tm.from, tm.to).map(e => [e.id, e.summary]));
+    let filter = 'all';
+    const ov = h('div', { class: 'search-ov', role: 'dialog', 'aria-label': 'بحث' });
+    const q = h('input', { type: 'search', placeholder: 'ابحث بالاسم أو بالكود', dir: 'auto', enterkeyhint: 'search' });
+    const close = () => { ov.remove(); UI.searchOpen = null; };
+    const fb = (v, l) => h('button', { class: 'sf' + (filter === v ? ' on' : ''), onclick: () => { filter = v; draw(); } }, l);
+    const chipsBox = h('div', { class: 'sfs' }), res = h('div', { class: 'sres' });
+    const go2 = id => { S.recent = [id, ...(S.recent || []).filter(x => x !== id)].slice(0, 6); save(); close(); openProfile(id); };
+    function draw() {
+      chipsBox.replaceChildren(fb('all', 'الكل'), fb('active', 'شغالين'), fb('gone', 'سابوا'), fb('need', 'مستنيين النهارده'));
+      const gone = id => S.employees[id].end && S.employees[id].end < today;
+      const ids = sortedIds().filter(id => matchEmp(id, q.value)).filter(id => filter === 'all' || (filter === 'active' && !gone(id)) || (filter === 'gone' && gone(id)) || (filter === 'need' && dayRes[id] && ['pending', 'missing'].includes(dayRes[id].code)));
+      const kids = [];
+      if (!q.value && (S.recent || []).length) kids.push(h('div', { class: 'sec-title' }, 'آخر بحث'), h('div', { class: 'qchips' }, S.recent.filter(id => S.employees[id]).map(id => h('button', { class: 'qchip', onclick: () => go2(id) }, empName(id)))));
+      kids.push(h('div', { class: 'sec-title' }, q.value ? `${ids.length} نتيجة` : 'كل الموظفين'));
+      if (!ids.length) kids.push(h('div', { class: 'card empty' }, 'مفيش موظف بالاسم أو الكود ده'));
+      else kids.push(h('div', { class: 'list' }, ids.map(id => {
+        const r = dayRes[id], s = monRes[id], e = { id, name: empName(id) };
+        const sub = [r ? 'النهارده: ' + rowSub(r) : gone(id) ? `ساب ${fmtDate(S.employees[id].end)}` : null, s ? `الشهر: ${D(s.worked)} س${s.late ? ' · تأخير ' + D(s.late) : ''}` : null].filter(Boolean).join(' · ');
+        const need = r && ['pending', 'missing'].includes(r.code);
+        return h('div', { class: 'li2' + (need ? ' need' : ''), role: 'button', tabindex: 0, onclick: () => go2(id) },
+          avatar(e.name, need ? 'warn' : ''),
+          h('div', { class: 'grow' }, h('div', { class: 't' }, h('span', { dir: 'auto' }, hl(e.name, q.value)), h('small', null, hl('كود ' + id, q.value))), h('div', { class: 's' }, sub),
+            r && r.code === 'pending' ? quickActions(e, r) : null),
+          r ? h('span', { class: 'pill c-' + r.code }, statusLabel(r, false)) : null);
+      })));
+      res.replaceChildren(...kids);
+    }
+    q.addEventListener('input', draw);
+    ov.append(h('div', { class: 'search-top' }, h('div', { class: 'srch' }, h('span', { html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>', style: 'display:inline-flex' }), q, h('button', { class: 'btn ghost sm', onclick: close }, 'إلغاء')), chipsBox), res);
+    document.body.append(ov); UI.searchOpen = { close, draw }; draw(); setTimeout(() => q.focus(), 50);
+  }
+
+  /* ======================= ملف الموظف ======================= */
+  function renderProfile(id) {
+    const root = $('tab-emps'), emp = S.employees[id];
+    if (!emp) { UI.profile = ''; renderEmps(); return; }
+    $('subtitle').textContent = 'كود ' + id;
+    const m = UI.pmonth, rng = monthRange(m), today = todayKey();
+    const res = rng.future ? null : computeRange(rng.from, rng.end).find(e => e.id === id);
+    const sh = S.settings.shifts.find(s => s.id === emp.shift);
+    const chips = [sh ? 'شيفت ' + sh.name : 'شيفت تلقائي', E.hoursOf(emp) ? `${+emp.hours} ساعات` : 'ساعات الشيفت', emp.off !== '' && emp.off != null ? 'إجازته ' + E.DAY_NAMES[+emp.off] : 'يوم الإجازة مش متحدد ⚠', emp.start ? 'من ' + fmtDate(emp.start) : null, emp.end ? 'ساب ' + fmtDate(emp.end) : null].filter(Boolean);
+    const shiftM = d => { const [y, mo] = m.split('-').map(Number), t = new Date(y, mo - 1 + d, 1); UI.pmonth = `${t.getFullYear()}-${pad(t.getMonth() + 1)}`; UI.pday = ''; render(); };
+    const kids = [
+      h('button', { class: 'btn ghost sm', style: 'margin:-4px 0 6px', onclick: () => { UI.profile = ''; render(); } }, '→ كل الموظفين'),
+      h('div', { class: 'prof' }, avatar(empName(id), 'big'), h('div', { class: 'grow' }, h('div', { class: 'prof-n', dir: 'auto' }, empName(id)), h('div', { class: 'muted' }, 'كود ' + id), h('div', { class: 'qchips', style: 'margin-top:6px' }, chips.map(c => h('span', { class: 'mini' }, c))))),
+      h('div', { class: 'acts' },
+        h('button', { class: 'btn', onclick: () => quickSheet({ ids: [id] }) }, 'تسجيل إذن'),
+        h('button', { class: 'btn', disabled: !res, onclick: () => exportExcel([computeRange(rng.from, rng.to).find(e => e.id === id)], Object.assign(rng, { label: monthLabel(m), tag: m }), { type: 'detail', single: true }) }, 'Excel'),
+        h('button', { class: 'btn', onclick: () => empSheet(id) }, 'تعديل البيانات')),
+      navBar(monthLabel(m), '', 'month', m, v => { UI.pmonth = v; UI.pday = ''; render(); }, () => shiftM(-1), () => shiftM(1))];
+    if (!res || !res.rows.length) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, rng.future ? 'الشهر ده لسه مجاش' : 'مكنش شغال الشهر ده')); return; }
+    const past = res.rows.filter(r => r.date <= today), s = { worked: 0, absent: 0, late: 0, overtime: 0 };
+    for (const r of past) { s.worked += r.worked || 0; s.absent += r.code === 'absent' ? 1 : 0; s.late += r.late || 0; s.overtime += r.overtime || 0; }
+    kids.push(h('div', { class: 'totals' },
+      h('div', { class: 'total' }, h('b', null, D(s.worked)), h('span', null, 'ساعات')),
+      h('div', { class: 'total' }, h('b', { style: 'color:var(--rose)' }, s.absent), h('span', null, 'غياب')),
+      h('div', { class: 'total' }, h('b', { style: 'color:var(--rose)' }, D(s.late)), h('span', null, 'تأخير')),
+      h('div', { class: 'total' }, h('b', { style: 'color:var(--green)' }, D(s.overtime)), h('span', null, 'زيادة'))));
+    // التقويم (السبت أول الأسبوع)
+    const byDate = Object.fromEntries(res.rows.map(r => [r.date, r]));
+    const first = rng.from, lead = (E.weekday(first) + 1) % 7, n = +rng.end.slice(8);
+    const cal = [...['سبت', 'حد', 'اتنين', 'تلات', 'أربع', 'خميس', 'جمعة'].map(d => h('div', { class: 'cal-h' }, d))];
+    for (let i = 0; i < lead; i++) cal.push(h('div'));
+    for (let d = 1; d <= n; d++) {
+      const k = `${m}-${pad(d)}`, r = byDate[k], fut = k > today;
+      if (!r) { cal.push(h('div', { class: 'cal-d g-out' }, d)); continue; }
+      const small = fut ? '' : r.worked != null ? D(r.worked) : r.code === 'excused' ? 'بإذن' : r.code === 'leave' ? 'إجازة' : r.code === 'absent' ? 'غياب' : r.code === 'off' ? '' : r.code === 'pending' ? '؟' : r.code === 'missing' ? 'ناقص' : '';
+      cal.push(h('button', { class: 'cal-d ' + (fut ? (r.code === 'pending' ? 'g-fut' : 'gs-' + r.code) : 'gs-' + r.code) + (UI.pday === k ? ' sel' : '') + (k === today ? ' today' : ''), onclick: () => { UI.pday = UI.pday === k ? '' : k; render(); } }, d, h('small', null, small)));
+    }
+    kids.push(h('div', { class: 'cal' }, cal));
+    const lg = (cls, l) => h('span', null, h('i', { class: cls }), l);
+    kids.push(h('div', { class: 'legend' }, lg('gs-present', 'حاضر'), lg('gs-excused', 'بإذن/إجازة'), lg('gs-absent', 'غياب'), lg('gs-pending', 'ناقص'), lg('gs-off', 'إجازة أسبوعية')));
+    const showDays = UI.pday ? [byDate[UI.pday]].filter(Boolean) : past.slice().reverse().filter(r => r.code !== 'off').slice(0, 5);
+    kids.push(h('div', { class: 'sec-title' }, UI.pday ? longDate(UI.pday) : 'آخر الأيام'));
+    kids.push(h('div', { class: 'list' }, showDays.map(r => {
+      const k = id + '|' + r.date, notes = S.notes[k] || [];
+      return h('div', { class: 'li2', role: 'button', tabindex: 0, onclick: () => openEditor(id, r.date) },
+        h('div', { class: 'grow' }, h('div', { class: 't' }, longDate(r.date)), h('div', { class: 's' }, rowSub(r)),
+          flagsOf(r, k).filter(f => !f.classList.contains('n')).length ? h('div', { class: 'flags' }, flagsOf(r, k).filter(f => !f.classList.contains('n'))) : null,
+          notes.map(nn => h('div', { class: 'note-line', dir: 'auto' }, nn.text))),
+        h('span', { class: 'pill c-' + pillCode(r, r.date > today) }, statusLabel(r, r.date > today)));
+    })));
+    root.replaceChildren(...kids);
+  }
   /* ======================= الرسوم البيانية ======================= */
   const SVGNS = 'http://www.w3.org/2000/svg';
   function sv(tag, attrs) { const el = document.createElementNS(SVGNS, tag); for (const k in attrs) el.setAttribute(k, attrs[k]); return el; }
@@ -447,10 +787,11 @@
   }
 
   /* ======================= Excel ======================= */
-  function exportExcel(list, rng) {
+  function exportExcel(list, rng, opts) {
+    opts = opts || { type: S.view.type, single: !!S.view.emp };
     const dur = min => ({ t: 'n', v: (min || 0) / 1440, z: '[h]:mm' }), txt = v => ({ t: 's', v: v == null ? '' : String(v) }), num = v => ({ t: 'n', v: v || 0 });
-    const isSum = S.view.type === 'summary', single = !!S.view.emp;
-    const title = `${isSum ? 'تقرير شامل' : 'تقرير مفصّل'} — ${single ? list[0].name : 'كل الموظفين'} — ${UI.rmode === 'range' ? `من ${fmtDate(rng.from)} إلى ${fmtDate(rng.to)}` : `${rng.label} (من ${fmtDate(rng.from)} إلى ${fmtDate(rng.to)})`}`;
+    const isSum = opts.type === 'summary', single = opts.single;
+    const title = `${isSum ? 'تقرير شامل' : 'تقرير مفصّل'} — ${single ? list[0].name : 'كل الموظفين'} — ${rng.custom ? `من ${fmtDate(rng.from)} إلى ${fmtDate(rng.to)}` : `${rng.label} (من ${fmtDate(rng.from)} إلى ${fmtDate(rng.to)})`}`;
     const aoa = [[txt(title)], []]; let widths;
     if (isSum) {
       const head = ['الكود', 'الاسم', 'يوم الإجازة', 'الساعات المطلوبة', 'أيام الحضور', 'أيام الغياب', 'غياب بإذن', 'إجازة', 'إجازة أسبوعية', 'شغل يوم إجازة', 'مستني تسجيل', 'ساعات العمل', 'التأخير', 'أيام التأخير', 'تأخير بإذن', 'انصراف بدري', 'أيام الانصراف بدري', 'انصراف بدري بإذن', 'الزيادة'];
@@ -491,6 +832,7 @@
   function defaultQuickDate() { const h = new Date().getHours(); return h < (S.settings.dayCutHour ?? 5) ? addDays(todayKey(), -1) : todayKey(); }
   function activeOn(date) { return sortedIds().filter(id => { const e = S.employees[id]; return !(e.end && date > e.end) && !(e.start && date < e.start); }); }
   function quickSheet(preset) {
+    UI.editor = null; $('sheet').classList.remove('full');
     const st = { ids: new Set((preset && preset.ids) || []), date: (preset && preset.date) || defaultQuickDate(), type: (preset && preset.type) || '' };
     const draw = () => {
       const today = todayKey(), ids = activeOn(st.date);
@@ -522,7 +864,7 @@
         h('div', { style: 'margin-top:12px' }, note), msg,
         h('div', { style: 'margin-top:12px' }, saveBtn));
     };
-    draw(); $('sheet').showModal();
+    draw(); if (!$('sheet').open) $('sheet').showModal();
   }
   function applyQuick(id, date, type, text) {
     const k = id + '|' + date;
@@ -543,6 +885,7 @@
     return out.sort((a, b) => a.r.date.localeCompare(b.r.date) || a.e.id.localeCompare(b.e.id, undefined, { numeric: true }));
   }
   function reviewSheet(from, to) {
+    UI.editor = null; $('sheet').classList.remove('full');
     const draw = () => {
       const items = reviewItems(from, to);
       if (!items.length) { $('sheet').close(); toast('خلصت المراجعة ✓'); render(); return; }
@@ -590,24 +933,34 @@
 
   /* ======================= الموظفين ======================= */
   function renderEmps() {
-    $('subtitle').textContent = `${sortedIds().length} موظف`;
+    if (UI.profile) return renderProfile(UI.profile);
+    $('subtitle').textContent = '';
     const today = todayKey(), ids = sortedIds();
-    const active = ids.filter(id => !(S.employees[id].end && S.employees[id].end < today)), gone = ids.filter(id => !active.includes(id));
-    const item = id => {
-      const e = S.employees[id], sh = S.settings.shifts.find(s => s.id === e.shift);
-      const off = e.off === '' || e.off == null ? 'يوم الإجازة مش متحدد ⚠' : 'إجازته ' + E.DAY_NAMES[+e.off];
-      const name = empName(id);
-      return h('button', { class: 'li' + (gone.includes(id) ? ' gone' : ''), onclick: () => empSheet(id) },
-        h('span', { class: 'avatar' }, name.trim().charAt(0) || '؟'),
-        h('span', { class: 'grow' }, h('div', { class: 't', dir: 'auto' }, name),
-          h('div', { class: 's' }, [`كود ${id}`, off, sh ? 'شيفت ' + sh.name : 'شيفت تلقائي', E.hoursOf(e) ? `${+e.hours} ساعات` : null, e.end ? `ساب ${fmtDate(e.end)}` : null].filter(Boolean).join(' · '))),
-        h('span', { html: ICON.chev, style: 'display:inline-flex' }));
+    const dayRes = Object.fromEntries(computeRange(today, today).filter(e => e.rows.length).map(e => [e.id, e.rows[0]]));
+    const q = h('input', { type: 'search', placeholder: '🔍 ابحث بالاسم أو الكود', dir: 'auto', value: UI.empQ || '' });
+    const listBox = h('div');
+    const draw = () => {
+      UI.empQ = q.value;
+      const hits = ids.filter(id => matchEmp(id, q.value));
+      const active = hits.filter(id => !(S.employees[id].end && S.employees[id].end < today)), gone = hits.filter(id => !active.includes(id));
+      const item = id => {
+        const e = S.employees[id], sh = S.settings.shifts.find(s => s.id === e.shift), r = dayRes[id];
+        const off = e.off === '' || e.off == null ? 'يوم الإجازة مش متحدد ⚠' : 'إجازته ' + E.DAY_NAMES[+e.off];
+        return h('button', { class: 'li' + (gone.includes(id) ? ' gone' : ''), onclick: () => openProfile(id) },
+          avatar(empName(id)),
+          h('span', { class: 'grow' }, h('div', { class: 't', dir: 'auto' }, hl(empName(id), q.value)),
+            h('div', { class: 's' }, [hl('كود ' + id, q.value), ' · ', [off, sh ? 'شيفت ' + sh.name : null, E.hoursOf(e) ? `${+e.hours} ساعات` : null, e.end ? `ساب ${fmtDate(e.end)}` : null].filter(Boolean).join(' · ')])),
+          r ? h('span', { class: 'pill c-' + r.code }, statusLabel(r, false)) : h('span', { html: ICON.chev, style: 'display:inline-flex' }));
+      };
+      const kids = [];
+      if (!ids.length) kids.push(h('div', { class: 'card empty' }, h('b', null, 'لسه مفيش موظفين'), 'بيتضافوا لوحدهم لما ترفع ملف الجهاز، أو ضيفهم من الزرار اللي فوق.'));
+      else if (!hits.length) kids.push(h('div', { class: 'card empty' }, 'مفيش موظف بالاسم أو الكود ده'));
+      if (active.length) kids.push(h('div', { class: 'sec-title' }, `شغالين (${active.length})`), h('div', { class: 'list' }, active.map(item)));
+      if (gone.length) kids.push(h('div', { class: 'sec-title' }, 'سابوا الشغل (موجودين في تقارير الشهور القديمة)'), h('div', { class: 'list' }, gone.map(item)));
+      listBox.replaceChildren(...kids);
     };
-    const kids = [h('button', { class: 'btn primary block', style: 'margin-bottom:12px', onclick: () => empSheet(null) }, h('span', { html: ICON.plus, style: 'display:inline-flex' }), 'موظف جديد')];
-    if (!ids.length) kids.push(h('div', { class: 'card empty' }, h('b', null, 'لسه مفيش موظفين'), 'بيتضافوا لوحدهم لما ترفع ملف الجهاز، أو ضيفهم من الزرار اللي فوق.'));
-    if (active.length) kids.push(h('div', { class: 'sec-title' }, 'شغالين'), h('div', { class: 'list' }, active.map(item)));
-    if (gone.length) kids.push(h('div', { class: 'sec-title' }, 'سابوا الشغل (موجودين في تقارير الشهور القديمة)'), h('div', { class: 'list' }, gone.map(item)));
-    $('tab-emps').replaceChildren(...kids);
+    q.addEventListener('input', draw); draw();
+    $('tab-emps').replaceChildren(h('div', { class: 'btns', style: 'margin-bottom:10px' }, h('div', { style: 'flex:1' }, q), h('button', { class: 'btn primary', onclick: () => empSheet(null) }, h('span', { html: ICON.plus, style: 'display:inline-flex' }), 'جديد')), listBox);
   }
   function empSheet(id) {
     const isNew = id == null, e = isNew ? { name: '', off: '', shift: '', hours: '', start: todayKey(), end: '' } : Object.assign({}, S.employees[id]);
@@ -645,7 +998,7 @@
       }) }, 'حذف الموظف نهائيًا')));
     openSheet(kids);
   }
-  function openSheet(kids) { $('sheet-in').replaceChildren(...kids); $('sheet').showModal(); }
+  function openSheet(kids) { UI.editor = null; $('sheet').classList.remove('full'); $('sheet-in').replaceChildren(...kids); if (!$('sheet').open) $('sheet').showModal(); }
   $('sheet').addEventListener('click', ev => { if (ev.target === $('sheet')) $('sheet').close(); });
 
   /* ======================= الإعدادات ======================= */
@@ -838,7 +1191,7 @@
       try { L.addListener('localNotificationActionPerformed', ev => { if (ev && ev.notification && ev.notification.id === REMIND_ID) { go('day'); setTimeout(() => quickSheet(null), 300); } }); } catch (e) { /* ignore */ }
       scheduleReminder(true);
     }
-    if (A) try { A.addListener('backButton', () => { if ($('sheet').open) $('sheet').close(); else if (UI.tab !== 'day') go('day'); else A.minimizeApp(); }); } catch (e) { /* ignore */ }
+    if (A) try { A.addListener('backButton', () => { if (UI.searchOpen) UI.searchOpen.close(); else if ($('sheet').open) $('sheet').close(); else if (UI.tab === 'emps' && UI.profile) { UI.profile = ''; render(); } else if (UI.tab !== 'day') go('day'); else A.minimizeApp(); }); } catch (e) { /* ignore */ }
   })();
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return;
