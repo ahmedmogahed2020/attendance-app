@@ -42,6 +42,7 @@
     // بداية الحساب: أول يوم في شهر تشغيل الجهاز — مفيش أي شهر قبله يظهر
     if (!S.settings.startFrom) S.settings.startFrom = (S.settings.deviceFrom || todayKey()).slice(0, 7) + '-01';
     S.device = Object.assign(blank().device, S.device || {});
+    payCfg();
     clampToStart();
   }
   /** أي موظف تاريخ بدايته قبل بداية الحساب يتظبط عليها، والشهور المقفولة القديمة تتشال */
@@ -102,7 +103,7 @@
   const monthOf = k => k.slice(0, 7);
   const empName = id => (S.employees[id] && S.employees[id].name) || S.names[id] || ('موظف ' + id);
   const sortedIds = () => Object.keys(S.employees).sort((a, b) => (+a - +b) || a.localeCompare(b));
-  const APP_VER = 'v1.14';
+  const APP_VER = 'v1.15';
   const isNative = () => !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
   const plugin = n => (window.Capacitor && window.Capacitor.Plugins) ? window.Capacitor.Plugins[n] : null;
   let toastT = 0;
@@ -729,7 +730,7 @@
     const root = $('tab-month'), rng = reportRange();
     $('subtitle').textContent = '';
     const v = S.view;
-    if (!['summary', 'detail', 'charts', 'log'].includes(v.type)) v.type = 'summary';
+    if (!['summary', 'detail', 'charts', 'log', 'pay'].includes(v.type)) v.type = 'summary';
     const all = rng.future ? [] : computeRange(rng.from, rng.to);
     if (v.emp && !all.some(e => e.id === v.emp)) v.emp = '';
     const dd = (small, val, fn) => h('button', { class: 'dd', onclick: fn }, h('span', null, h('small', null, small), val), h('span', { html: ICON.chev, style: 'display:inline-flex;transform:rotate(-90deg)' }));
@@ -755,9 +756,10 @@
       h('div', { class: 'total' }, h('b', { style: 'color:var(--green)' }, D(tot('overtime'))), h('span', null, 'زيادة'))));
     const tab = (t, l) => h('button', { class: v.type === t ? 'on' : '', onclick: () => { v.type = t; save(); render(); } }, l);
     const canX = v.type === 'summary' || v.type === 'detail';
-    kids.push(h('div', { class: 'tabs' }, tab('summary', 'ملخص'), tab('detail', 'تفاصيل'), tab('charts', 'رسوم'), tab('log', 'أذونات'),
+    kids.push(h('div', { class: 'tabs' }, tab('summary', 'ملخص'), tab('detail', 'تفاصيل'), tab('charts', 'رسوم'), tab('log', 'أذونات'), tab('pay', '💰 مرتبات'),
       canX ? h('button', { class: 'xl', 'aria-label': 'تحميل Excel', html: ICON.xls + '<span>Excel</span>', onclick: () => exportExcel(list, rng) }) : null,
-      h('button', { class: 'xl', 'aria-label': 'كشوف PDF', html: '<span>📄 كشف</span>', onclick: () => statementSheet(list, rng, rng.label) })));
+      v.type === 'pay' ? null : h('button', { class: 'xl', 'aria-label': 'كشوف PDF', html: '<span>📄 كشف</span>', onclick: () => statementSheet(list, rng, rng.label) })));
+    if (v.type === 'pay') { kids.push(...(UI.rmode === 'month' ? payView(UI.month) : [h('div', { class: 'card empty' }, h('b', null, 'المرتبات بتتحسب بالشهر'), 'اختار شهر من "الفترة" فوق.')])); root.replaceChildren(...kids); return; }
     if (v.type === 'log') kids.push(...logView(list));
     else if (v.type === 'charts') kids.push(...(v.emp ? empCharts(list[0], rng) : teamCharts(list, rng)));
     else if (v.type === 'summary') kids.push(insightsView(list, rng), summaryTable(list));
@@ -881,7 +883,9 @@
         h('button', { class: 'btn', onclick: () => quickSheet({ ids: [id] }) }, 'تسجيل إذن'),
         h('button', { class: 'btn', disabled: !res, onclick: () => statementSheet([computeRange(rng.from, rng.to).find(e => e.id === id)], Object.assign(rng, { label: monthLabel(m), tag: m }), monthLabel(m)) }, '📄 كشف'),
         h('button', { class: 'btn', onclick: () => empSheet(id) }, 'تعديل البيانات')),
-      navBar(monthLabel(m), '', 'month', m, v => { UI.pmonth = v; UI.pday = ''; render(); }, () => shiftM(-1), () => shiftM(1))];
+      h('div', { class: 'ptabs' }, h('button', { class: UI.ptab !== 'money' ? 'on' : '', onclick: () => { UI.ptab = ''; render(); } }, '📅 الحضور'), h('button', { class: UI.ptab === 'money' ? 'on' : '', onclick: () => { UI.ptab = 'money'; render(); } }, '💰 الفلوس')),
+      UI.ptab === 'money' ? null : navBar(monthLabel(m), '', 'month', m, v => { UI.pmonth = v; UI.pday = ''; render(); }, () => shiftM(-1), () => shiftM(1))];
+    if (UI.ptab === 'money') { root.replaceChildren(...kids.filter(Boolean), ...moneyView(id)); return; }
     if (!res || !res.rows.length) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, rng.future ? 'الشهر ده لسه مجاش' : 'مكنش شغال الشهر ده')); return; }
     const past = res.rows.filter(r => r.date <= today), s = { worked: 0, absent: 0, late: 0, overtime: 0 };
     for (const r of past) { s.worked += r.worked || 0; s.absent += r.code === 'absent' ? 1 : 0; s.late += (r.late || 0) + (r.short || 0); s.overtime += r.overtime || 0; }
@@ -1069,6 +1073,395 @@
     const fname = `attendance_${rng.tag}_${isSum ? 'summary' : 'detailed'}${single ? '_emp' + list[0].id : '_all'}.xlsx`;
     saveFile(fname, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', XLSX.write(wb, { type: 'base64', bookType: 'xlsx' }))
       .catch(err => toast('مقدرتش أحفظ الملف: ' + (err.message || err)));
+  }
+
+  /* ======================= المرتبات والمديونيات ======================= */
+  // القواعد (كلها بتتغير من الإعدادات). الكشف المعتمد بيتحفظ بأرقامه ومبيتغيرش.
+  const PAY_DEF = { dayDiv: 30, absentDays: 2, excusedDays: 1, leaveDays: 1, t1: 60, t2: 120, t3: 240, f1: 0.25, f2: 0.5, f3: 1, repCount: 6, repMin: 30, repDays: 1, otRate: 1, roundTo: 10, target: 0, teamPct: 0.5, products: [] };
+  function payCfg() {
+    S.pay = S.pay || {}; S.pay.cfg = Object.assign(clone(PAY_DEF), S.pay.cfg || {});
+    S.pay.months = S.pay.months || {}; S.pay.retro = S.pay.retro || {}; S.debts = S.debts || [];
+    return S.pay.cfg;
+  }
+  const fmtN = n => (Math.round(+n || 0)).toLocaleString('en-US');
+  const sgn = n => (n < 0 ? '− ' : n > 0 ? '+ ' : '') + fmtN(Math.abs(n));
+  const roundTo = (v, step) => step > 0 ? Math.round(v / step) * step : Math.round(v);
+  const empPay = id => { const e = S.employees[id]; if (!e) return {}; e.pay = e.pay || {}; e.pay.base = e.pay.base || []; return e.pay; };
+  /** الأساسي في شهر معين (آخر تغيير بدأ قبل أو في الشهر ده) */
+  function baseFor(id, m) { let v = null; for (const x of [...empPay(id).base].sort((a, b) => a.from.localeCompare(b.from))) if (x.from <= m) v = +x.amount; return v; }
+  const monthData = m => { payCfg(); const md = S.pay.months[m] = S.pay.months[m] || {}; md.qty = md.qty || {}; md.slips = md.slips || {}; return md; };
+  const slipState = (m, id) => { const md = monthData(m); const s = md.slips[id] = md.slips[id] || { status: 'draft' }; s.edits = s.edits || {}; s.extra = s.extra || []; return s; };
+  const activeIn = (id, m) => { const e = S.employees[id]; if (!e) return false; const r = monthRange(m); return !(e.start && e.start > r.end) && !(e.end && e.end < r.from); };
+  const payIds = m => sortedIds().filter(id => activeIn(id, m) && baseFor(id, m) != null);
+  const teamIds = m => sortedIds().filter(id => activeIn(id, m) && empPay(id).team);
+  const debtRemain = d => +d.amount - (d.pays || []).reduce((a, p) => a + (+p.amount || 0), 0);
+  /** قسط مديونية في شهر: المخطط لو اتغيّر، وإلا القسط العادي (والسلفة كلها مرة واحدة) */
+  function instFor(d, m) {
+    if (monthOf(d.date) > m) return 0;
+    const paidThis = (d.pays || []).filter(p => p.src === 'salary' && p.m === m).reduce((a, p) => a + +p.amount, 0);
+    const rem = debtRemain(d) + paidThis; if (rem <= 0) return 0;
+    if (d.plan && d.plan[m] != null) return Math.min(+d.plan[m], rem);
+    return d.kind === 'advance' ? rem : Math.min(+d.inst || rem, rem);
+  }
+  const dayList = rows => rows.map(r => `${SHORT_DAYS[E.weekday(r.date)]} ${+r.date.slice(8)}`).join('، ');
+  /** يحسب كشف موظف لشهر — بيرجع البنود قبل وبعد تعديلاتك */
+  function buildSlip(id, m) {
+    const cfg = payCfg(), e = S.employees[id], P = empPay(id), md = monthData(m), st = slipState(m, id), rng = monthRange(m);
+    const base = baseFor(id, m); if (base == null) return null;
+    const res = rng.future ? null : computeRange(rng.from, rng.to).find(x => x.id === id), rows = res ? res.rows : [];
+    const day = base / (+cfg.dayDiv || 30);
+    const reqs = {}; for (const r of rows) if (r.required) reqs[r.required] = (reqs[r.required] || 0) + 1;
+    const dayMin = +Object.keys(reqs).sort((a, b) => reqs[b] - reqs[a])[0] || (E.hoursOf(e) ? E.hoursOf(e) : 480);
+    const hour = day / (dayMin / 60);
+    const lines = [], add = (key, label, detail, amount, extra) => lines.push(Object.assign({ key, label, detail, auto: Math.round(amount) }, extra || {}));
+    add('base', 'الأساسي', `اليوم ${fmtN(day)} · الساعة ${fmtN(hour)}`, base);
+    // تارجت الأصناف
+    const q = md.qty[id] || {}, prods = (cfg.products || []).filter(p => p.on !== false); let ps = 0; const pd = [];
+    for (const p of prods) { const n = +q[p.id] || 0; if (n) { ps += n * +p.price; pd.push(`${n} × ${p.name}`); } }
+    if (ps) add('prod', 'تارجت الأصناف', pd.join(' · '), ps);
+    // التارجت الجماعي
+    if (P.team && +md.sales) {
+      const sales = +md.sales, n = teamIds(m).length || 1;
+      if (+cfg.target && sales >= +cfg.target) add('team', 'التارجت الجماعي', `اتحقق · ${fmtN(sales)} × ${cfg.teamPct}% ÷ ${n}`, sales * cfg.teamPct / 100 / n);
+      else add('team', 'التارجت الجماعي', `موصلناش · ${fmtN(sales)} من ${fmtN(cfg.target)}`, 0);
+    }
+    // نسبة الأرباح
+    if (+P.pct && +md.profit) add('profit', 'نسبة الأرباح', `${P.pct}% من ${fmtN(md.profit)}${cfg.roundTo > 1 ? ` · مقرّب لأقرب ${cfg.roundTo}` : ''}`, roundTo(+md.profit * P.pct / 100, +cfg.roundTo));
+    // الزيادة بأثر رجعي (فرق الأساسي في شهور اتصرفت)
+    const rp = {}; let rt = 0;
+    for (const pm of Object.keys(S.pay.months).sort()) {
+      if (pm >= m) break;
+      const ps0 = (S.pay.months[pm].slips || {})[id]; if (!ps0 || ps0.status !== 'paid' || !ps0.snap) continue;
+      const done = ((S.pay.retro[id] || {})[pm] || []).reduce((a, x) => a + x.amount, 0);
+      const diff = (baseFor(id, pm) ?? ps0.snap.base) - ps0.snap.base - done;
+      if (Math.round(diff)) { rp[pm] = diff; rt += diff; }
+    }
+    if (Math.round(rt)) add('retro', rt > 0 ? 'فرق زيادة بأثر رجعي' : 'فرق تخفيض بأثر رجعي', Object.entries(rp).map(([pm, v]) => `${MONTHS[+pm.slice(5) - 1]} ${sgn(v)}`).join(' · '), rt, { retro: rp });
+    // الخصومات من البصمة
+    const ab = rows.filter(r => r.code === 'absent'), ex = rows.filter(r => r.code === 'excused'), lv = rows.filter(r => r.code === 'leave');
+    if (ab.length) add('abs', 'غياب بدون إذن', `${dayList(ab)} · ${ab.length} × ${cfg.absentDays} يوم`, -ab.length * cfg.absentDays * day);
+    if (ex.length) add('exc', 'غياب بإذن', `${dayList(ex)} · ${ex.length} × ${cfg.excusedDays} يوم`, -ex.length * cfg.excusedDays * day);
+    if (lv.length) add('leave', 'إجازة', `${dayList(lv)} · ${lv.length} × ${cfg.leaveDays} يوم`, -lv.length * cfg.leaveDays * day);
+    const tier = l => l >= cfg.t3 ? [+cfg.f3, 'يوم'] : l >= cfg.t2 ? [+cfg.f2, 'نص يوم'] : l >= cfg.t1 ? [+cfg.f1, 'ربع يوم'] : null;
+    const big = rows.filter(r => (r.late || 0) >= cfg.t1);
+    if (big.length) add('big', 'تأخير كبير', big.map(r => `${SHORT_DAYS[E.weekday(r.date)]} ${+r.date.slice(8)} (${D(r.late)} = ${tier(r.late)[1]})`).join('، '), -big.reduce((a, r) => a + tier(r.late)[0], 0) * day);
+    const rep = rows.filter(r => (r.late || 0) >= cfg.repMin).length, rn = Math.floor(rep / (+cfg.repCount || 6)) * cfg.repDays;
+    if (rn && !P.noRep) add('rep', 'تكرار التأخير', `اتأخر ${rep} مرة ${cfg.repMin} دقيقة أو أكتر · كل ${cfg.repCount} مرات = ${cfg.repDays} يوم`, -rn * day);
+    let small = 0, ot = 0; for (const r of rows) { if ((r.late || 0) < cfg.t1) small += r.late || 0; small += (r.early || 0) + (r.short || 0); ot += r.overtime || 0; }
+    if (small || ot) {
+      const net = ot - small;
+      add('ot', net >= 0 ? 'زيادة صافية' : 'تأخير صافي', `زيادة ${D(ot)} − تأخير وبدري ${D(small)} = ${D(Math.abs(net))} × ${fmtN(hour)}`, net / 60 * hour * (net > 0 ? +cfg.otRate : 1));
+    }
+    // المديونيات والسلف
+    for (const d of S.debts.filter(x => x.emp === id)) {
+      const a = instFor(d, m); if (!a) continue;
+      const rem = debtRemain(d) + (d.pays || []).filter(p => p.src === 'salary' && p.m === m).reduce((x, p) => x + +p.amount, 0);
+      add('debt:' + d.id, d.kind === 'advance' ? 'سلفة' : 'قسط مديونية', `${d.note ? `"${d.note}" · ` : ''}فاضل بعده ${fmtN(rem - a)}`, -a, { debt: d.id });
+    }
+    for (const x of st.extra) add('x:' + x.id, x.label || (x.amount >= 0 ? 'مكافأة' : 'خصم'), x.note || '', +x.amount, { extra: true });
+    for (const l of lines) { const ed = st.edits[l.key]; l.amount = ed ? Math.round(+ed.amount) : l.auto; l.note = ed ? ed.note : ''; l.edited = !!ed && l.amount !== l.auto; }
+    const pending = rows.filter(r => r.code === 'pending' || r.code === 'missing').length;
+    return { id, m, base, day, hour, lines, net: lines.reduce((a, l) => a + l.amount, 0), pending, autoKey: JSON.stringify(lines.filter(l => !l.extra).map(l => [l.key, l.auto])) };
+  }
+  /** الكشف اللي يتعرض: المعتمد بأرقامه المحفوظة، والمسودة بالحساب دلوقتي */
+  function shownSlip(m, id) {
+    const st = slipState(m, id);
+    if (st.status !== 'draft' && st.snap) { const live = st.status === 'approved' ? buildSlip(id, m) : null; return Object.assign({}, st.snap, { id, m, changed: !!(live && live.autoKey !== st.snap.autoKey), live }); }
+    return buildSlip(id, m);
+  }
+  function approveSlip(m, id) {
+    const s = buildSlip(id, m); if (!s) return;
+    const st = slipState(m, id); st.status = 'approved'; st.snap = Object.assign({}, s, { at: nowStamp() }); delete st.snap.live; save();
+  }
+  function unapproveSlip(m, id) { const st = slipState(m, id); if (st.status !== 'approved') return; st.status = 'draft'; delete st.snap; save(); }
+  /** الصرف: الأقساط تنزل من المديونيات والفروق تتسجل — وبعدها الكشوف متتعدلش */
+  function payMonth(m) {
+    const md = monthData(m), ids = payIds(m);
+    if (ids.some(id => slipState(m, id).status !== 'approved')) { toast('لازم كل الكشوف تتعتمد الأول'); return; }
+    for (const id of ids) {
+      const st = slipState(m, id);
+      for (const l of st.snap.lines) {
+        if (l.debt && l.amount) { const d = S.debts.find(x => x.id === l.debt); if (d) (d.pays = d.pays || []).push({ src: 'salary', m, amount: -l.amount, date: todayKey() }); }
+        if (l.retro) { const R = S.pay.retro[id] = S.pay.retro[id] || {}; for (const pm in l.retro) (R[pm] = R[pm] || []).push({ m, amount: l.retro[pm] }); }
+      }
+      st.status = 'paid';
+    }
+    md.paid = nowStamp(); save(); render(); toast(`💸 مرتبات ${monthLabel(m)} اتصرفت`);
+  }
+  function unpayMonth(m) {
+    const md = monthData(m);
+    for (const d of S.debts) d.pays = (d.pays || []).filter(p => !(p.src === 'salary' && p.m === m));
+    for (const id in S.pay.retro) for (const pm in S.pay.retro[id]) S.pay.retro[id][pm] = S.pay.retro[id][pm].filter(x => x.m !== m);
+    for (const id in md.slips) if (md.slips[id].status === 'paid') md.slips[id].status = 'approved';
+    md.paid = null; save(); render(); toast('اترجع الصرف — الكشوف رجعت معتمدة');
+  }
+
+  /* ---------- شاشة المرتبات (في التقارير) ---------- */
+  function payView(m) {
+    const cfg = payCfg(), md = monthData(m), ids = payIds(m), noSal = sortedIds().filter(id => activeIn(id, m) && baseFor(id, m) == null);
+    const out = [];
+    if (!ids.length) {
+      out.push(h('div', { class: 'card empty' }, h('b', null, 'لسه محدش ليه مرتب متسجّل'), 'افتح ملف كل موظف ← 💰 الفلوس ← اكتب الأساسي.',
+        sortedIds().length ? h('div', { class: 'btns', style: 'justify-content:center;margin-top:10px' }, h('button', { class: 'btn primary', onclick: () => salarySheet(sortedIds()[0]) }, 'ابدأ بأول موظف')) : null));
+      return out;
+    }
+    const slips = ids.map(id => shownSlip(m, id)), sts = ids.map(id => slipState(m, id).status);
+    const rng0 = monthRange(m), rvN = md.paid ? 0 : reviewItems(rng0.from, rng0.to < openDayKey() ? rng0.to : addDays(openDayKey(), -1)).filter(x => ids.includes(x.e.id)).length;
+    if (rvN) out.push(h('div', { class: 'banner' }, h('span', null, `⚠ فيه ${rvN} تأخير/بدري لسه متراجعش (بإذن ولا لأ) — الخصم بيتحسب عليهم كأنهم بدون إذن`), h('button', { class: 'btn sm', onclick: () => reviewSheet(rng0.from, rng0.to) }, 'راجع')));
+    const nApp = sts.filter(s => s !== 'draft').length, paid = !!md.paid;
+    const tot = k => slips.reduce((a, s) => a + s.lines.filter(k).reduce((x, l) => x + l.amount, 0), 0);
+    const step = paid ? 2 : nApp === ids.length ? 2 : 1;
+    out.push(h('div', { class: 'pay-steps' }, ['١ أرقام الشهر', '٢ مراجعة واعتماد', '٣ الصرف'].map((x, i) => h('span', { class: i < step ? 'dn' : i === step ? 'on' : '' }, x))));
+    // أرقام الشهر
+    const prods = (cfg.products || []).filter(p => p.on !== false), anyTeam = teamIds(m).length, anyPct = ids.some(id => +empPay(id).pct);
+    const nums = [anyTeam ? (md.sales ? `مبيعات ${fmtN(md.sales)}${+cfg.target ? (+md.sales >= +cfg.target ? ' ✓ التارجت' : ' ✗ التارجت') : ''}` : '⚠ المبيعات مش مكتوبة') : null,
+      anyPct ? (md.profit ? `ربح ${fmtN(md.profit)}` : '⚠ الربح مش مكتوب') : null,
+      prods.length ? `أصناف: ${Object.keys(md.qty).filter(id => Object.values(md.qty[id] || {}).some(v => +v)).length} موظف` : null].filter(Boolean);
+    if (nums.length) out.push(h('button', { class: 'pay-nums', disabled: paid, onclick: () => numbersSheet(m) }, h('span', { class: 'grow' }, h('b', null, '📝 أرقام الشهر'), h('small', null, nums.join(' · '))), paid ? null : h('span', { class: 'btn sm' }, 'تعديل')));
+    out.push(h('div', { class: 'pay-sum' }, h('small', null, `صافي مرتبات ${monthLabel(m)} · ${ids.length} موظف`), h('div', { class: 'big' }, fmtN(slips.reduce((a, s) => a + s.net, 0)), h('span', null, ' ج.م')),
+      h('div', { class: 'row' }, h('div', null, paid ? 'اتصرف' : 'معتمد', h('b', null, paid ? '✓' : `${nApp} من ${ids.length}`)),
+        h('div', null, 'خصومات', h('b', null, sgn(tot(l => l.amount < 0 && !l.debt)))), h('div', null, 'أقساط وسلف', h('b', null, sgn(tot(l => !!l.debt)))))));
+    ids.forEach((id, i) => {
+      const s = slips[i], stt = sts[i], warn = s.changed ? 'البصمات اتغيرت بعد الاعتماد' : s.pending ? `${s.pending} يوم ناقص تسجيل` : s.lines.some(l => l.edited) ? 'فيه بند معدّل' : '';
+      out.push(h('button', { class: 'pay-row', onclick: () => slipSheet(m, id) }, h('span', { class: 'ec-av', style: 'background:' + empColor(id) }, initial(empName(id))),
+        h('span', { class: 'grow' }, h('b', { dir: 'auto' }, empName(id)), h('small', { class: warn && (s.changed || s.pending) ? 'wr' : '' }, warn || `الأساسي ${fmtN(s.base)}`)),
+        h('span', { class: 'net' }, h('b', null, fmtN(s.net)), h('span', { class: 'pb ' + stt }, stt === 'paid' ? '💸 اتصرف' : stt === 'approved' ? '✓ معتمد' : 'مسودة'))));
+    });
+    if (noSal.length) out.push(h('p', { class: 'muted', style: 'font-size:12.5px;margin:6px 4px' }, `من غير مرتب متسجّل: ${noSal.map(empName).join('، ')} — من ملف الموظف ← 💰 الفلوس.`));
+    out.push(h('div', { class: 'btns', style: 'margin-top:8px' },
+      paid ? h('button', { class: 'btn', style: 'flex:1', onclick: ev => confirmBtn(ev.currentTarget, 'متأكد؟ الأقساط هترجع', () => unpayMonth(m)) }, `↶ إلغاء الصرف (${fmtDate(md.paid.slice(0, 10))})`)
+        : h('button', { class: 'btn primary', style: 'flex:2', disabled: nApp < ids.length, onclick: ev => confirmBtn(ev.currentTarget, 'اضغط تاني للتأكيد', () => payMonth(m)) }, nApp < ids.length ? `٣ الصرف — فاضل ${ids.length - nApp} كشف` : '💸 اتصرفت — سجّل الصرف'),
+      h('button', { class: 'btn', style: 'flex:1', onclick: () => payExcel(m) }, '📊 Excel')));
+    return out;
+  }
+  function numbersSheet(m) {
+    const cfg = payCfg(), md = monthData(m), prods = (cfg.products || []).filter(p => p.on !== false), ids = payIds(m);
+    const sales = h('input', { inputmode: 'numeric', dir: 'ltr', value: md.sales || '', placeholder: '0' }), profit = h('input', { inputmode: 'numeric', dir: 'ltr', value: md.profit || '', placeholder: '0' });
+    const num = v => +String(v).replace(/[^\d.]/g, '') || 0;
+    const info = h('div', { class: 'mk-hint' });
+    const upd = () => { const sv = num(sales.value), n = teamIds(m).length || 1; info.textContent = !+cfg.target ? 'حدد رقم التارجت من الإعدادات ← المرتبات' : sv >= +cfg.target ? `✓ اتحقق · ${fmtN(sv)} × ${cfg.teamPct}% = ${fmtN(sv * cfg.teamPct / 100)} ÷ ${n} = ${fmtN(sv * cfg.teamPct / 100 / n)} لكل واحد` : `✗ موصلناش — المطلوب ${fmtN(cfg.target)}`; };
+    sales.addEventListener('input', upd); upd();
+    const qIn = {};
+    const tbl = prods.length ? h('div', { class: 'qt-wrap' }, h('table', { class: 'qt' }, h('tr', null, h('th'), prods.map(p => h('th', null, p.name, h('br'), h('small', null, fmtN(p.price) + ' ج')))),
+      ids.map(id => h('tr', null, h('td', { dir: 'auto' }, empName(id)), prods.map(p => { const i = h('input', { inputmode: 'numeric', value: (md.qty[id] || {})[p.id] || '', placeholder: '0' }); (qIn[id] = qIn[id] || {})[p.id] = i; return h('td', null, i); }))))) : null;
+    openSheet([h('div', { class: 'grab' }), h('h2', null, `أرقام ${monthLabel(m)}`),
+      teamIds(m).length ? h('div', { class: 'pay-in' }, h('b', null, '💰 إجمالي مبيعات الشهر'), sales, info, h('div', { class: 'mk-hint' }, 'الداخلين في التارجت: ' + teamIds(m).map(empName).join(' · '))) : null,
+      ids.some(id => +empPay(id).pct) ? h('div', { class: 'pay-in' }, h('b', null, '📈 ربح المحل'), profit, h('div', { class: 'mk-hint' }, ids.filter(id => +empPay(id).pct).map(id => `${empName(id)} ${empPay(id).pct}%`).join(' · '))) : null,
+      tbl ? h('div', { class: 'pay-in' }, h('b', null, '🏷 تارجت الأصناف — كام قطعة باع كل واحد'), tbl) : h('p', { class: 'muted' }, 'مفيش أصناف عليها عمولة — ضيفها من الإعدادات ← المرتبات.'),
+      h('button', { class: 'btn primary block', style: 'width:100%;margin-top:10px', onclick: () => {
+        md.sales = num(sales.value) || ''; md.profit = num(profit.value) || '';
+        for (const id in qIn) { md.qty[id] = {}; for (const pid in qIn[id]) { const v = num(qIn[id][pid].value); if (v) md.qty[id][pid] = v; } }
+        save(); $('sheet').close(); render(); toast('اتحفظ — الكشوف المسودة اتحسبت تاني');
+      } }, 'حفظ')]);
+  }
+  function slipSheet(m, id) {
+    const ids = payIds(m), i = ids.indexOf(id), st = slipState(m, id), s = shownSlip(m, id); if (!s) return;
+    const paid = st.status === 'paid', draft = st.status === 'draft';
+    let editing = UI.slipEdit || '';
+    const nav = h('div', { class: 'slip-nav' }, h('button', { class: 'btn sm ghost', disabled: i <= 0, onclick: () => { UI.slipEdit = ''; slipSheet(m, ids[i - 1]); } }, '→ ' + (i > 0 ? empName(ids[i - 1]) : '')),
+      h('b', null, `${i + 1} من ${ids.length}`), h('button', { class: 'btn sm ghost', disabled: i >= ids.length - 1, onclick: () => { UI.slipEdit = ''; slipSheet(m, ids[i + 1]); } }, (i < ids.length - 1 ? empName(ids[i + 1]) : '') + ' ←'));
+    const line = l => {
+      if (editing === l.key && draft) {
+        const a = h('input', { inputmode: 'numeric', dir: 'ltr', value: Math.abs(l.amount) }), n = h('input', { value: l.note || '', placeholder: 'السبب (مثلاً: أول شهر ليها)', dir: 'auto' });
+        const neg = l.auto < 0 || l.amount < 0 || (l.key === 'ot' && l.label.includes('تأخير'));
+        return h('div', { class: 'sl-ed' }, h('b', null, l.label), h('div', { class: 'muted', style: 'font-size:12px' }, `المحسوب: ${sgn(l.auto)}`), h('div', { class: 'grid2' }, a, n),
+          h('div', { class: 'btns', style: 'margin-top:8px' }, h('button', { class: 'btn primary sm', onclick: () => { const v = Math.abs(+String(a.value).replace(/[^\d.]/g, '') || 0) * (neg ? -1 : 1); if (l.extra) { const x = st.extra.find(z => 'x:' + z.id === l.key); x.amount = v; x.note = n.value.trim(); } else st.edits[l.key] = { amount: v, note: n.value.trim() }; UI.slipEdit = ''; save(); render(); slipSheet(m, id); } }, 'حفظ'),
+            !l.extra && st.edits[l.key] ? h('button', { class: 'btn sm', onclick: () => { delete st.edits[l.key]; UI.slipEdit = ''; save(); render(); slipSheet(m, id); } }, 'رجّع المحسوب') : null,
+            h('button', { class: 'btn sm danger', onclick: () => { if (l.extra) st.extra = st.extra.filter(z => 'x:' + z.id !== l.key); else st.edits[l.key] = { amount: 0, note: n.value.trim() || 'اتشال' }; UI.slipEdit = ''; save(); render(); slipSheet(m, id); } }, l.extra ? 'امسح' : 'شيله'),
+            h('button', { class: 'btn sm ghost', onclick: () => { UI.slipEdit = ''; slipSheet(m, id); } }, 'إلغاء')));
+      }
+      return h('div', { class: 'sl' + (l.edited ? ' chg' : '') }, h('span', { class: 'grow' }, l.label, h('small', null, [l.detail, l.edited ? `✎ معدّل${l.note ? `: "${l.note}"` : ''}` : l.note && l.extra ? '' : ''].filter(Boolean).join(' · '))),
+        h('span', { class: 'amt ' + (l.amount < 0 ? 'm' : l.key === 'base' ? '' : 'p') }, l.edited ? h('s', null, fmtN(Math.abs(l.auto))) : null, l.key === 'base' ? fmtN(l.amount) : sgn(l.amount)),
+        draft ? h('button', { class: 'ed', 'aria-label': 'تعديل', onclick: () => { UI.slipEdit = l.key; slipSheet(m, id); } }, '✎') : null);
+    };
+    const plus = s.lines.filter(l => l.amount >= 0 && !(l.auto < 0)), minus = s.lines.filter(l => !plus.includes(l));
+    const addExtra = () => {
+      const lb = h('input', { placeholder: 'مكافأة / خصم / ...', dir: 'auto' }), am = h('input', { inputmode: 'numeric', dir: 'ltr', placeholder: '0' }), nt = h('input', { placeholder: 'السبب', dir: 'auto' });
+      let neg = false; const sw = h('div', { class: 'seg2' }, h('button', { class: 'on', onclick: ev => { neg = false; sw.children[0].classList.add('on'); sw.children[1].classList.remove('on'); } }, '+ إضافة'), h('button', { onclick: () => { neg = true; sw.children[1].classList.add('on'); sw.children[0].classList.remove('on'); } }, '− خصم'));
+      openSheet([h('div', { class: 'grab' }), h('h2', null, 'بند جديد · ' + empName(id)), sw, h('label', { class: 'f' }, 'اسم البند'), lb, h('div', { class: 'grid2', style: 'margin-top:8px' }, h('div', null, h('label', { class: 'f' }, 'المبلغ'), am), h('div', null, h('label', { class: 'f' }, 'السبب'), nt)),
+        h('button', { class: 'btn primary block', style: 'width:100%;margin-top:12px', onclick: () => { const v = +String(am.value).replace(/[^\d.]/g, ''); if (!v) { toast('اكتب المبلغ'); return; } st.extra.push({ id: 'x' + Date.now(), label: lb.value.trim() || (neg ? 'خصم' : 'مكافأة'), amount: neg ? -v : v, note: nt.value.trim() }); save(); render(); slipSheet(m, id); } }, 'إضافة')]);
+    };
+    const warns = [];
+    if (s.changed) warns.push(h('div', { class: 'warn-line' }, `⚠ البصمات أو الأرقام اتغيرت بعد الاعتماد — الحساب دلوقتي ${fmtN(s.live.net)} بدل ${fmtN(s.net)}. لو عاوز تحدّثه: إلغاء الاعتماد واعتمد تاني.`));
+    if (s.pending) warns.push(h('div', { class: 'warn-line' }, `⚠ فيه ${s.pending} يوم ناقص تسجيل في الشهر — الأحسن تراجعهم الأول.`));
+    $('sheet').classList.add('full'); UI.editor = null;
+    $('sheet-in').replaceChildren(
+      h('div', { class: 'cf-top' }, h('b', null, `كشف مرتب ${monthLabel(m)}`), h('button', { class: 'note-x', 'aria-label': 'قفل', onclick: () => { UI.slipEdit = ''; $('sheet').close(); } }, '×')),
+      nav,
+      h('div', { class: 'slip' },
+        h('div', { class: 'slip-hd' }, h('span', { class: 'ec-av', style: 'background:' + empColor(id) }, initial(empName(id))), h('span', { class: 'grow' }, h('b', { dir: 'auto' }, empName(id)), h('small', null, `كود ${id} · الأساسي ${fmtN(s.base)}`)),
+          h('span', { class: 'pb ' + st.status }, paid ? '💸 اتصرف' : st.status === 'approved' ? '✓ معتمد' : 'مسودة')),
+        warns,
+        h('div', { class: 'sl-g' }, 'المرتب والإضافات'), plus.map(line),
+        minus.length ? [h('div', { class: 'sl-g' }, 'الخصومات والأقساط'), minus.map(line)] : null,
+        draft ? h('button', { class: 'btn sm', style: 'margin:8px 14px', onclick: addExtra }, '+ بند (مكافأة / خصم)') : null,
+        h('div', { class: 'slip-net' }, h('span', null, 'الصافي'), h('b', null, fmtN(s.net) + ' ج.م')),
+        h('div', { class: 'btns', style: 'padding:12px 14px' },
+          draft ? h('button', { class: 'btn primary', style: 'flex:2', onclick: () => { approveSlip(m, id); render(); const nx = ids.find((x, j) => j > i && slipState(m, x).status === 'draft'); toast('✓ اتعتمد'); if (nx) slipSheet(m, nx); else slipSheet(m, id); } }, '✓ اعتمد الكشف') : null,
+          !draft ? h('button', { class: 'btn primary', style: 'flex:1', onclick: () => slipExport(m, id, 'save') }, '📥 حفظ') : null,
+          !draft ? h('button', { class: 'btn', style: 'flex:1', onclick: () => slipExport(m, id, 'share') }, '📤 مشاركة') : null,
+          st.status === 'approved' ? h('button', { class: 'btn ghost', onclick: () => { unapproveSlip(m, id); render(); slipSheet(m, id); } }, 'إلغاء الاعتماد') : null)),
+      draft ? h('p', { class: 'muted', style: 'font-size:12.5px;margin:8px 2px' }, '✎ أي بند تقدر تعدّله أو تشيله — الرقم المحسوب بيفضل باين. الحفظ والإرسال بيتفتحوا بعد الاعتماد.') : null);
+    if (!$('sheet').open) $('sheet').showModal();
+  }
+  /** صورة كشف المرتب */
+  async function slipCanvas(m, id) {
+    try { await Promise.all(['400', '600'].map(w => document.fonts.load(`${w} 20px "IBM Plex Sans Arabic"`))); } catch (err) { /* ignore */ }
+    const s = shownSlip(m, id), W = 1080, M = 60, RH = 64, H = 330 + s.lines.length * RH + 200;
+    const c = document.createElement('canvas'); c.width = W; c.height = H; const x = c.getContext('2d');
+    const F = (w, sz) => `${w} ${sz}px "IBM Plex Sans Arabic", Tahoma, sans-serif`;
+    const T = (t, px, py, o = {}) => { x.font = F(o.w || 400, o.sz || 26); x.fillStyle = o.c || '#1E1B3A'; x.textAlign = o.a || 'right'; x.direction = o.dir || 'rtl'; x.fillText(String(t), px, py); };
+    x.fillStyle = '#fff'; x.fillRect(0, 0, W, H); x.fillStyle = '#5B4BDB'; x.fillRect(0, 0, W, 12);
+    T('كشف مرتب', W - M, 90, { w: 600, sz: 44 }); T(monthLabel(m), M, 90, { a: 'left', c: '#6B6790', sz: 28 });
+    T(`${empName(id)} · كود ${id}`, W - M, 145, { w: 600, sz: 30, dir: 'auto' });
+    T(`الأساسي ${fmtN(s.base)} · اليوم ${fmtN(s.day)} · الساعة ${fmtN(s.hour)}`, W - M, 190, { c: '#6B6790', sz: 24 });
+    let y = 250; x.fillStyle = '#EFEBFF'; x.fillRect(M, y - 40, W - 2 * M, 54); T('البند', W - M - 16, y - 4, { w: 600, sz: 24, c: '#6B6790' }); T('المبلغ', M + 16, y - 4, { w: 600, sz: 24, c: '#6B6790', a: 'left' });
+    y += 30;
+    for (const l of s.lines) {
+      y += RH; T(l.label, W - M - 16, y - 24, { w: 600, sz: 26 });
+      const det = [l.detail, l.edited && l.note ? `معدّل: ${l.note}` : ''].filter(Boolean).join(' · ');
+      if (det) { x.font = F(400, 19); let t = det; while (t.length > 2 && x.measureText(t).width > W - 2 * M - 260) t = t.slice(0, -2); T(t + (t !== det ? '…' : ''), W - M - 16, y + 4, { sz: 19, c: '#6B6790' }); }
+      T(l.key === 'base' ? fmtN(l.amount) : sgn(l.amount), M + 16, y - 12, { w: 600, sz: 28, a: 'left', dir: 'ltr', c: l.amount < 0 ? '#C2485F' : l.key === 'base' ? '#1E1B3A' : '#1E8C6E' });
+      x.fillStyle = '#E6E1FA'; x.fillRect(M, y + 18, W - 2 * M, 2);
+    }
+    y += 70; x.fillStyle = '#5B4BDB'; x.beginPath(); x.roundRect ? x.roundRect(M, y - 50, W - 2 * M, 84, 18) : x.rect(M, y - 50, W - 2 * M, 84); x.fill();
+    T('الصافي', W - M - 24, y + 4, { w: 600, sz: 32, c: '#fff' }); T(fmtN(s.net) + ' ج.م', M + 24, y + 6, { w: 600, sz: 38, c: '#fff', a: 'left', dir: 'rtl' });
+    T(`تطبيق الحضور والانصراف · ${slipState(m, id).status === 'paid' ? 'اتصرف' : 'معتمد'} ${fmtDate(((slipState(m, id).snap || {}).at || todayKey()).slice(0, 10))}`, W / 2, H - 30, { sz: 18, c: '#9A96B8', a: 'center' });
+    return c;
+  }
+  async function slipExport(m, id, dest) {
+    try {
+      const c = await slipCanvas(m, id);
+      const f = [{ name: `salary_${m}_${id}.png`, nice: safeName(`مرتب ${empName(id)} - ${monthLabel(m)}`) + '.png', mime: 'image/png', base64: c.toDataURL('image/png').split(',')[1] }];
+      await (dest === 'save' ? saveFiles(f) : shareFiles(f));
+      if (dest === 'share') { slipState(m, id).sentAt = nowStamp(); save(); }
+    } catch (e) { console.error(e); toast('مقدرتش أعمل الصورة: ' + (e.message || e)); }
+  }
+  async function payExcel(m) {
+    try { await needXLSX(); } catch (e) { toast(e.message); return; }
+    const ids = payIds(m), keys = [['base', 'الأساسي'], ['prod', 'الأصناف'], ['team', 'التارجت الجماعي'], ['profit', 'الأرباح'], ['retro', 'بأثر رجعي'], ['ot', 'زيادة/تأخير صافي'], ['abs', 'غياب بدون إذن'], ['exc', 'غياب بإذن'], ['leave', 'إجازة'], ['big', 'تأخير كبير'], ['rep', 'تكرار التأخير']];
+    const aoa = [[`مرتبات ${monthLabel(m)}`], [], ['الكود', 'الاسم', ...keys.map(k => k[1]), 'أقساط وسلف', 'بنود يدوية', 'الصافي', 'الحالة']];
+    for (const id of ids) {
+      const s = shownSlip(m, id), g = k => s.lines.filter(l => l.key === k).reduce((a, l) => a + l.amount, 0);
+      aoa.push([+id || id, empName(id), ...keys.map(k => g(k[0])), s.lines.filter(l => l.debt).reduce((a, l) => a + l.amount, 0), s.lines.filter(l => l.extra).reduce((a, l) => a + l.amount, 0), s.net, { draft: 'مسودة', approved: 'معتمد', paid: 'اتصرف' }[slipState(m, id).status]]);
+    }
+    const ws = XLSX.utils.aoa_to_sheet(aoa), wb = XLSX.utils.book_new(); ws['!cols'] = [8, 22, ...keys.map(() => 12), 12, 12, 12, 10].map(w => ({ wch: w }));
+    XLSX.utils.book_append_sheet(wb, ws, 'المرتبات'); wb.Workbook = { Views: [{ RTL: true }] };
+    saveFile(`salaries_${m}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', XLSX.write(wb, { type: 'base64', bookType: 'xlsx' })).catch(err => toast('مقدرتش أحفظ الملف: ' + (err.message || err)));
+  }
+
+  /* ---------- الفلوس في ملف الموظف ---------- */
+  function curPayMonth() { const cur = monthOf(todayKey()), pm = prevMonth(cur); return pm >= startMonth() && !(S.pay.months[pm] || {}).paid ? pm : cur; }
+  function moneyView(id) {
+    payCfg(); const P = empPay(id), pm = curPayMonth(), base = baseFor(id, pm), out = [];
+    const hist = [...P.base].sort((a, b) => b.from.localeCompare(a.from));
+    out.push(h('div', { class: 'card' }, h('div', { class: 'mv-hd' }, h('h2', null, '💼 المرتب'), h('button', { class: 'btn sm primary', onclick: () => salarySheet(id) }, base == null ? '+ اكتب المرتب' : 'تعديل')),
+      base == null ? h('p', { class: 'muted' }, 'لسه ملوش أساسي متسجّل.') : h('div', { class: 'mv-grid' },
+        h('div', null, h('small', null, 'الأساسي'), h('b', null, fmtN(base))), h('div', null, h('small', null, 'نسبة الأرباح'), h('b', null, +P.pct ? P.pct + '%' : '—')),
+        h('div', null, h('small', null, 'التارجت الجماعي'), h('b', null, P.team ? 'داخل ✓' : 'برّه')), h('div', null, h('small', null, 'خصم تكرار التأخير'), h('b', null, P.noRep ? 'معفي' : 'عليه'))),
+      hist.length > 1 ? h('div', { class: 'mv-hist' }, '📜 ', hist.map(x => `${fmtN(x.amount)} من ${monthLabel(x.from)}`).join(' ← ')) : null));
+    const debts = S.debts.filter(d => d.emp === id), open = debts.filter(d => debtRemain(d) > 0), done = debts.filter(d => debtRemain(d) <= 0);
+    out.push(h('div', { class: 'mv-hd', style: 'margin:14px 2px 8px' }, h('h2', { style: 'margin:0' }, '💵 المديونيات والسلف'), h('button', { class: 'btn sm primary', onclick: () => debtSheet(id) }, '+ جديدة')));
+    if (!open.length) out.push(h('div', { class: 'card empty', style: 'padding:14px' }, 'مفيش مديونيات مفتوحة ✓'));
+    for (const d of open) {
+      const rem = debtRemain(d), paidAmt = +d.amount - rem, a = instFor(d, pm), planned = d.plan && d.plan[pm] != null;
+      const left = d.kind === 'advance' ? '' : ` · فاضل ${Math.ceil(rem / (+d.inst || rem))} شهر`;
+      out.push(h('div', { class: 'debt' }, h('div', { class: 'debt-t' }, h('span', null, h('b', null, d.kind === 'advance' ? 'سلفة' : 'مديونية'), h('small', null, `من ${fmtDate(d.date)}${d.note ? ` · "${d.note}"` : ''}`)),
+        h('span', { style: 'text-align:left' }, h('span', { class: 'debt-big' }, fmtN(rem)), h('small', null, `فاضل من ${fmtN(d.amount)}`))),
+        h('div', { class: 'debt-prog' }, h('i', { style: `width:${Math.round(paidAmt / +d.amount * 100)}%` })),
+        h('div', { class: 'ec-meta' }, h('span', null, `اتدفع ${fmtN(paidAmt)}`), h('span', null, d.kind === 'advance' ? 'تتخصم مرة واحدة' : `القسط ${fmtN(d.inst)}${left}`)),
+        h('div', { class: 'debt-this' }, h('span', { class: 'grow' }, h('b', null, `قسط ${monthLabel(pm)}`), h('small', null, planned ? (a ? 'اتغيّر للشهر ده' : 'متأجّل الشهر ده') : 'بيتخصم من المرتب')), h('b', { style: 'font-size:17px' }, fmtN(a)),
+          h('button', { class: 'btn sm', onclick: () => instSheet(d, pm) }, 'غيّر')),
+        (d.pays || []).length ? h('div', { class: 'mv-hist' }, '📜 ', d.pays.map(p => `${p.src === 'cash' ? fmtDate(p.date) + ' كاش' : MONTHS[+p.m.slice(5) - 1] + ' من المرتب'} ${fmtN(p.amount)}`).join(' · ')) : null,
+        h('div', { class: 'btns', style: 'margin-top:8px' }, h('button', { class: 'btn sm', onclick: () => cashSheet(d) }, '💵 دفع كاش'),
+          h('button', { class: 'btn sm danger', disabled: (d.pays || []).some(p => p.src === 'salary'), onclick: ev => confirmBtn(ev.currentTarget, 'متأكد؟', () => { S.debts = S.debts.filter(x => x !== d); save(); render(); }) }, 'امسح'))));
+    }
+    if (done.length) out.push(h('p', { class: 'muted', style: 'font-size:12.5px;margin:6px 4px' }, `✓ اتقفلت: ${done.map(d => `${d.kind === 'advance' ? 'سلفة' : 'مديونية'} ${fmtN(d.amount)} (${fmtDate(d.date)})`).join(' · ')}`));
+    return out;
+  }
+  function salarySheet(id) {
+    const P = empPay(id), cur = monthOf(todayKey()), pm = curPayMonth(), base = baseFor(id, pm);
+    const amt = h('input', { inputmode: 'numeric', dir: 'ltr', value: base ?? '', placeholder: 'مثلاً 6000' });
+    const fromSel = h('select', null, h('option', { value: pm }, `من ${monthLabel(pm)}${pm === cur ? ' (الشهر ده)' : ' (الشهر اللي لسه متصرفش)'}`), pm !== nextMonth(pm) ? h('option', { value: nextMonth(pm) }, `من ${monthLabel(nextMonth(pm))}`) : null, h('option', { value: 'x' }, 'من شهر قبل كده (بأثر رجعي)'));
+    const fromM = h('input', { type: 'month', value: prevMonth(pm), min: startMonth(), max: cur, hidden: true });
+    fromSel.addEventListener('change', () => { fromM.hidden = fromSel.value !== 'x'; });
+    const pct = h('input', { inputmode: 'decimal', dir: 'ltr', value: P.pct || '', placeholder: '0' });
+    const team = h('input', { type: 'checkbox', checked: !!P.team }), noRep = h('input', { type: 'checkbox', checked: !!P.noRep });
+    openSheet([h('div', { class: 'grab' }), h('h2', null, 'مرتب ' + empName(id)),
+      h('label', { class: 'f' }, 'الأساسي (ج.م)'), amt,
+      base != null ? [h('label', { class: 'f', style: 'margin-top:8px' }, 'التغيير يبدأ من'), fromSel, fromM, h('div', { class: 'mk-hint' }, 'الكشوف المعتمدة والمصروفة مش بتتغير. لو بأثر رجعي، الفرق بيتضاف بند في أول كشف لسه متصرفش.')] : null,
+      h('label', { class: 'f', style: 'margin-top:10px' }, 'نسبة من الأرباح %'), pct,
+      h('div', { class: 'chk', style: 'margin-top:10px;flex-direction:column;align-items:flex-start;gap:8px' }, h('label', null, team, 'داخل في التارجت الجماعي'), h('label', null, noRep, 'معفي من خصم تكرار التأخير')),
+      h('button', { class: 'btn primary block', style: 'width:100%;margin-top:12px', onclick: () => {
+        const v = +String(amt.value).replace(/[^\d.]/g, '');
+        if (v && v !== base) {
+          const from = base == null ? startMonth() : fromSel.value === 'x' ? (fromM.value || prevMonth(pm)) : fromSel.value;
+          P.base = P.base.filter(x => x.from !== from); P.base.push({ from, amount: v }); P.base.sort((a, b) => a.from.localeCompare(b.from));
+          P.base = P.base.filter((x, i, a) => i === 0 || +x.amount !== +a[i - 1].amount);
+        }
+        P.pct = +String(pct.value).replace(/[^\d.]/g, '') || 0; P.team = team.checked; P.noRep = noRep.checked;
+        save(); $('sheet').close(); render(); toast('اتحفظ');
+      } }, 'حفظ')]);
+  }
+  function debtSheet(id) {
+    let kind = 'debt';
+    const amt = h('input', { inputmode: 'numeric', dir: 'ltr', placeholder: '0' }), inst = h('input', { inputmode: 'numeric', dir: 'ltr', placeholder: 'مثلاً 500' });
+    const dt = h('input', { type: 'date', value: todayKey() }), note = h('input', { placeholder: 'مثلاً: مصاريف علاج', dir: 'auto' });
+    const instBox = h('div', null, h('label', { class: 'f' }, 'القسط الشهري'), inst);
+    const sw = h('div', { class: 'seg2' }, h('button', { class: 'on', onclick: () => { kind = 'debt'; sw.children[0].classList.add('on'); sw.children[1].classList.remove('on'); instBox.hidden = false; } }, 'مديونية بالتقسيط'),
+      h('button', { onclick: () => { kind = 'advance'; sw.children[1].classList.add('on'); sw.children[0].classList.remove('on'); instBox.hidden = true; } }, 'سلفة (مرة واحدة)'));
+    openSheet([h('div', { class: 'grab' }), h('h2', null, 'مديونية / سلفة · ' + empName(id)), sw,
+      h('div', { class: 'grid2', style: 'margin-top:10px' }, h('div', null, h('label', { class: 'f' }, 'المبلغ'), amt), instBox),
+      h('div', { class: 'grid2', style: 'margin-top:8px' }, h('div', null, h('label', { class: 'f' }, 'التاريخ'), dt), h('div', null, h('label', { class: 'f' }, 'السبب'), note)),
+      h('button', { class: 'btn primary block', style: 'width:100%;margin-top:12px', onclick: () => {
+        const a = +String(amt.value).replace(/[^\d.]/g, ''), i = +String(inst.value).replace(/[^\d.]/g, '');
+        if (!a) { toast('اكتب المبلغ'); return; } if (kind === 'debt' && !i) { toast('اكتب القسط الشهري'); return; }
+        S.debts.push({ id: 'd' + Date.now(), emp: id, kind, amount: a, inst: kind === 'debt' ? i : a, date: dt.value || todayKey(), note: note.value.trim(), plan: {}, pays: [] });
+        save(); $('sheet').close(); render(); toast('اتسجلت');
+      } }, 'حفظ')]);
+  }
+  function instSheet(d, m) {
+    const a = h('input', { inputmode: 'numeric', dir: 'ltr', value: instFor(d, m) });
+    openSheet([h('div', { class: 'grab' }), h('h2', null, `قسط ${monthLabel(m)}`), h('p', { class: 'muted', style: 'margin-top:-6px' }, `${d.kind === 'advance' ? 'سلفة' : 'مديونية'} ${fmtN(d.amount)} · فاضل ${fmtN(debtRemain(d))}`),
+      h('label', { class: 'f' }, 'يتخصم الشهر ده'), a,
+      h('div', { class: 'btns', style: 'margin-top:12px' },
+        h('button', { class: 'btn primary', style: 'flex:1', onclick: () => { d.plan = d.plan || {}; d.plan[m] = +String(a.value).replace(/[^\d.]/g, '') || 0; save(); $('sheet').close(); render(); toast('اتحفظ'); } }, 'حفظ'),
+        h('button', { class: 'btn', style: 'flex:1', onclick: () => { d.plan = d.plan || {}; d.plan[m] = 0; save(); $('sheet').close(); render(); toast(`اتأجّل قسط ${monthLabel(m)}`); } }, 'أجّله الشهر ده'),
+        d.plan && d.plan[m] != null ? h('button', { class: 'btn ghost', onclick: () => { delete d.plan[m]; save(); $('sheet').close(); render(); } }, 'رجّعه عادي') : null),
+      h('p', { class: 'muted', style: 'font-size:12.5px' }, 'لو الكشف اتعتمد قبل التغيير، لازم تلغي اعتماده وتعتمده تاني عشان ياخد القسط الجديد.')]);
+  }
+  function cashSheet(d) {
+    const a = h('input', { inputmode: 'numeric', dir: 'ltr', placeholder: '0' }), dt = h('input', { type: 'date', value: todayKey() }), nt = h('input', { placeholder: 'ملاحظة', dir: 'auto' });
+    openSheet([h('div', { class: 'grab' }), h('h2', null, 'دفع كاش'), h('p', { class: 'muted', style: 'margin-top:-6px' }, `فاضل ${fmtN(debtRemain(d))}`),
+      h('div', { class: 'grid2' }, h('div', null, h('label', { class: 'f' }, 'المبلغ'), a), h('div', null, h('label', { class: 'f' }, 'التاريخ'), dt)), h('label', { class: 'f', style: 'margin-top:8px' }, 'ملاحظة'), nt,
+      h('button', { class: 'btn primary block', style: 'width:100%;margin-top:12px', onclick: () => { const v = +String(a.value).replace(/[^\d.]/g, ''); if (!v) { toast('اكتب المبلغ'); return; } (d.pays = d.pays || []).push({ src: 'cash', amount: Math.min(v, debtRemain(d)), date: dt.value || todayKey(), note: nt.value.trim() }); save(); $('sheet').close(); render(); toast('اتسجل'); } }, 'حفظ')]);
+  }
+  /** كارت إعدادات المرتبات */
+  function payCard() {
+    const cfg = payCfg();
+    const num = (k, step) => h('input', { type: 'number', step: step || 'any', inputmode: 'decimal', value: cfg[k], onchange: ev => { const v = parseFloat(ev.target.value); if (!isNaN(v) && v >= 0) { S.pay.cfg[k] = v; save(); toast('اتحفظ'); } } });
+    const row = (t, s, c) => h('div', { class: 'set-row' }, h('div', { class: 'lbl' }, h('b', null, t), s ? h('span', null, s) : null), c);
+    const rules = h('div', { class: 'card' }, h('h2', null, 'قواعد الحساب'),
+      row('قيمة اليوم', 'الأساسي ÷ كام يوم', num('dayDiv', 1)),
+      row('غياب بدون إذن', 'بيتخصم كام يوم', num('absentDays', 0.25)), row('غياب بإذن', 'بيتخصم كام يوم', num('excusedDays', 0.25)), row('إجازة متفق عليها', 'بيتخصم كام يوم', num('leaveDays', 0.25)),
+      h('div', { class: 'sec-title' }, 'التأخير الكبير (في اليوم الواحد، بعد السماح وبدون إذن)'),
+      row('من (دقيقة)', `ربع يوم = ${cfg.f1} · لحد ${cfg.t2} دقيقة`, num('t1', 1)), row('من (دقيقة)', `نص يوم = ${cfg.f2} · لحد ${cfg.t3} دقيقة`, num('t2', 1)), row('أكتر من (دقيقة)', `يوم كامل = ${cfg.f3}`, num('t3', 1)),
+      h('div', { class: 'sec-title' }, 'تكرار التأخير'),
+      row('عدد المرات', 'كل كام مرة يتخصم', num('repCount', 1)), row('أقل تأخير يتحسب', 'بالدقايق بعد السماح', num('repMin', 1)), row('الخصم', 'كام يوم', num('repDays', 0.25)),
+      h('div', { class: 'sec-title' }, 'الزيادة والتقريب'),
+      row('قيمة ساعة الزيادة', '× قيمة ساعة الخصم', num('otRate', 0.25)), row('تقريب نسبة الأرباح', 'لأقرب كام جنيه', num('roundTo', 1)),
+      h('p', { class: 'muted', style: 'font-size:12.5px;margin:8px 0 0' }, 'التأخير الأقل من الحد الأول + الانصراف بدري + نقص الساعات بيتجمعوا على الشهر، وبيتشال منهم الزيادة: لو الباقي تأخير يتخصم بالساعة، ولو زيادة تتصرف. الإجازة الأسبوعية والرسمية مفيش عليهم خصم.'));
+    const team = h('div', { class: 'card' }, h('h2', null, 'التارجت الجماعي'),
+      row('رقم المبيعات المطلوب', 'لو المبيعات وصلته', num('target', 1000)), row('النسبة %', 'من إجمالي المبيعات وتتقسم بالتساوي', num('teamPct', 0.1)),
+      h('p', { class: 'muted', style: 'font-size:12.5px;margin:6px 0 0' }, 'مين داخل: من ملف كل موظف ← 💰 الفلوس ← تعديل.'));
+    cfg.products = cfg.products || [];
+    const prods = h('div', { class: 'card' }, h('h2', null, 'أصناف عليها عمولة'),
+      cfg.products.length ? cfg.products.map((p, i) => h('div', { class: 'grid2', style: 'margin-bottom:8px;grid-template-columns:2fr 1fr auto' },
+        h('input', { value: p.name, placeholder: 'اسم المنتج', dir: 'auto', onchange: ev => { p.name = ev.target.value.trim(); save(); } }),
+        h('input', { type: 'number', value: p.price, placeholder: 'ج للقطعة', onchange: ev => { p.price = +ev.target.value || 0; save(); } }),
+        h('button', { class: 'btn danger sm', onclick: ev => confirmBtn(ev.currentTarget, 'تاني', () => { cfg.products.splice(i, 1); S.pay.cfg = cfg; save(); render(); }) }, 'حذف'))) : h('p', { class: 'muted' }, 'لسه مفيش أصناف.'),
+      h('button', { class: 'btn sm', onclick: () => { cfg.products.push({ id: 'p' + Date.now(), name: '', price: 0 }); S.pay.cfg = cfg; save(); render(); } }, '+ صنف'));
+    return [rules, team, prods];
   }
 
   /* ======================= التسجيل السريع ======================= */
@@ -1429,11 +1822,13 @@
         s: [lp ? `آخر سحب ${lp.at.slice(0, 10) === todayKey() ? 'النهارده ' + fmt12(E.hm(lp.at.slice(11))) : fmtDate(lp.at.slice(0, 10))}` : isNative() ? 'لسه مسحبتش من الجهاز' : `${S.imports.length} ملف اترفع`, `بداية الحساب ${monthLabel(startMonth())}`] },
       { id: 'shifts', ic: '⏰', bg: 'var(--violet-soft)', t: 'الشيفتات والمواعيد', cards: () => [shiftCard, daysCard, rulesCard],
         s: [...st.shifts.filter(x => !x.ruleOnly).map(x => `${x.name} ${x.start}–${x.end}`), (st.rules || []).filter(r => r.on).length ? `${(st.rules || []).filter(r => r.on).length} يوم خاص` : null, `سماح ${st.grace} د`] },
+      { id: 'pay', ic: '💰', bg: 'var(--amber-soft)', t: 'المرتبات', cards: () => payCard(),
+        s: [`اليوم = الأساسي ÷ ${payCfg().dayDiv}`, `غياب ${payCfg().absentDays} يوم`, (payCfg().products || []).length ? `${payCfg().products.length} صنف` : null, +payCfg().target ? `التارجت ${fmtN(payCfg().target)}` : null] },
       { id: 'months', ic: '🗓', bg: 'var(--rose-soft)', t: 'الشهور والإجازات الرسمية', cards: () => [lockCard, holCard],
         s: [lastM < sm ? 'لسه مفيش شهر خلص' : S.locked[lastM] ? `${monthLabel(lastM)} مقفول` : `${monthLabel(lastM)} مفتوح`, upHol ? `${upHol} إجازة جاية` : 'مفيش إجازات رسمية جاية'] },
       { id: 'security', ic: '🛡', bg: 'var(--green-soft)', t: 'الأمان والنسخ الاحتياطي', cards: () => [lockAppCard, backupCard, dangerCard],
         s: [lc && lc.on ? 'القفل شغال' : 'القفل مقفول', b.freq === 'off' ? 'النسخ التلقائي مقفول' : b.last ? `آخر نسخة ${fmtDate(b.last.slice(0, 10))}` : 'النسخ التلقائي شغال'] },
-      { id: 'look', ic: '🎨', bg: 'var(--amber-soft)', t: 'الشكل والتذكير', cards: () => [styleCard, remindCard],
+      { id: 'look', ic: '🎨', bg: 'var(--soft)', t: 'الشكل والتذكير', cards: () => [styleCard, remindCard],
         s: [STYLE_NAME[st.style || 'vivid'] || '', rmd && rmd.on ? `التذكير ${fmt12(E.hm(rmd.time || '00:00'))}` : 'التذكير مقفول'] }];
     const sec = SECS.find(x => x.id === UI.setPage);
     if (sec) {
