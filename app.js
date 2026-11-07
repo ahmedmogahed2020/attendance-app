@@ -12,7 +12,8 @@
       settings: clone(E.DEFAULT_SETTINGS), employees: {}, perms: {}, manual: {}, punches: [], names: {}, removed: {}, imports: [],
       view: { type: 'summary', emp: '' },
       backup: { freq: 'daily', day: 5, time: '23:00', keep: 10, last: '', init: 1 },
-      notes: {}, reviewed: {}, remind: { on: true, time: '00:00' }, locked: {}
+      notes: {}, reviewed: {}, remind: { on: true, time: '00:00' }, locked: {},
+      device: { ip: '192.168.1.201', port: 4370, password: '', auto: true, lastPull: null }
     };
   }
   let S = blank();
@@ -38,6 +39,16 @@
     // النسخة الأولى كانت بتحفظ آخر ملف بس — نحوّله لسجل البصمات المتجمع
     if (S.data) { mergePunches(S.data.punches || []); Object.assign(S.names, S.data.names || {}); delete S.data; delete S.fileName; delete S.range; }
     for (const id in S.employees) if (S.employees[id].hidden) { S.removed[id] = true; delete S.employees[id]; }
+    // بداية الحساب: أول يوم في شهر تشغيل الجهاز — مفيش أي شهر قبله يظهر
+    if (!S.settings.startFrom) S.settings.startFrom = (S.settings.deviceFrom || todayKey()).slice(0, 7) + '-01';
+    S.device = Object.assign(blank().device, S.device || {});
+    clampToStart();
+  }
+  /** أي موظف تاريخ بدايته قبل بداية الحساب يتظبط عليها، والشهور المقفولة القديمة تتشال */
+  function clampToStart(oldStart) {
+    const sf = S.settings.startFrom; if (!sf) return;
+    for (const id in S.employees) { const e = S.employees[id]; if (!e.start || e.start < sf || (oldStart && e.start === oldStart)) e.start = sf; }
+    for (const m in S.locked) if (m < sf.slice(0, 7)) delete S.locked[m];
   }
   let PV = 0; // نسخة البصمات — بتزيد لما بصمات تتضاف أو تتمسح
   function mergePunches(list) {
@@ -82,6 +93,12 @@
   const fmtDate = k => { const [y, m, d] = k.split('-'); return `${+d}/${+m}/${y}`; };
   const longDate = k => { const [, m, d] = k.split('-'); return `${E.DAY_NAMES[E.weekday(k)]} ${+d} ${MONTHS[+m - 1]}`; };
   const monthLabel = m => { const [y, mo] = m.split('-'); return `${MONTHS[+mo - 1]} ${y}`; };
+  const startDay = () => S.settings.startFrom || S.settings.deviceFrom || todayKey();
+  const startMonth = () => startDay().slice(0, 7);
+  const prevMonth = m => addDays(m + '-01', -1).slice(0, 7);
+  const nextMonth = m => addDays(m + '-28', 7).slice(0, 7);
+  /** أول يوم البصمات بتتاخد منه (الأحدث بين بداية الحساب وتشغيل الجهاز) */
+  const takeFrom = () => [S.settings.startFrom, S.settings.deviceFrom].filter(Boolean).sort().pop() || '';
   const monthOf = k => k.slice(0, 7);
   const empName = id => (S.employees[id] && S.employees[id].name) || S.names[id] || ('موظف ' + id);
   const sortedIds = () => Object.keys(S.employees).sort((a, b) => (+a - +b) || a.localeCompare(b));
@@ -202,6 +219,12 @@
   function goDay(date, empId) { UI.date = date; go('day'); if (empId) setTimeout(() => openEditor(empId, date), 60); }
   function openProfile(id) { UI.profile = id; UI.pmonth = monthOf(UI.tab === 'grid' ? UI.gmonth + '-01' : todayKey()); UI.pday = ''; go('emps'); }
   function render() {
+    const sd = startDay(), sm = sd.slice(0, 7);
+    if (UI.date < sd) UI.date = sd;
+    if (UI.month < sm) UI.month = sm;
+    if (UI.gmonth < sm) UI.gmonth = sm;
+    if (UI.pmonth && UI.pmonth < sm) UI.pmonth = sm;
+    if (UI.range && UI.range.from < sd) UI.range.from = sd;
     renderTop();
     ({ day: renderDay, grid: renderGrid, month: renderMonth, emps: renderEmps, settings: renderSettings })[UI.tab]();
     const p = pendingIn(monthOf(todayKey())).length;
@@ -209,9 +232,10 @@
     if (UI.editor && $('sheet').open) drawEditor();
   }
   function navBar(label, sub, inputType, value, onPick, onPrev, onNext) {
-    const inp = h('input', { type: inputType, value, 'aria-label': 'اختار', onchange: ev => ev.target.value && onPick(ev.target.value) });
+    const mn = inputType === 'month' ? startMonth() : inputType === 'date' ? startDay() : '';
+    const inp = h('input', { type: inputType, value, min: mn || null, 'aria-label': 'اختار', onchange: ev => ev.target.value && onPick(ev.target.value < mn ? mn : ev.target.value) });
     return h('div', { class: 'nav-bar' },
-      h('button', { class: 'arrow', 'aria-label': 'اللي قبله', html: ICON.prev, onclick: onPrev }),
+      h('button', { class: 'arrow', 'aria-label': 'اللي قبله', html: ICON.prev, disabled: !!mn && value <= mn, onclick: onPrev }),
       h('label', { class: 'picker' }, h('b', null, label), sub ? h('small', null, sub) : null, inp),
       h('button', { class: 'arrow', 'aria-label': 'اللي بعده', html: ICON.next, onclick: onNext }));
   }
@@ -271,6 +295,15 @@
         h('div', { class: 'grow' }, h('b', null, 'حاجات محتاجة قرارك'), h('div', { class: 'muted' }, [pend ? `${pend} تسجيل ناقص` : null, rv ? `${rv} تأخير/بدري: بإذن ولا لأ؟` : null].filter(Boolean).join(' · ') + ` — ${monthLabel(cm)}`)),
         h('button', { class: 'btn primary sm', onclick: () => closeFlow(cm) }, 'ابدأ')));
     }
+    // أول 10 أيام في الشهر: فكّرني أقفل الشهر اللي فات
+    const lastM = prevMonth(monthOf(today));
+    if (date === today && +today.slice(8) <= 10 && lastM >= startMonth() && !S.locked[lastM] && S.view.nag !== lastM) {
+      const left = closeItems(lastM).length;
+      kids.unshift(h('div', { class: 'banner nagb' }, h('span', { class: 'grow' }, h('b', null, `${monthLabel(lastM)} خلص`), h('small', null, left ? `فيه ${left} حاجة محتاجة قرارك قبل ما تقفله` : 'كله متسجّل — اقفله عشان محدش يعدّل فيه بالغلط')),
+        h('button', { class: 'btn sm primary', onclick: () => left ? closeFlow(lastM) : lockMonth(lastM) }, left ? 'راجع' : '🔒 اقفله'),
+        h('button', { class: 'note-x', 'aria-label': 'بعدين', onclick: () => { S.view.nag = lastM; save(); render(); } }, '×')));
+    }
+    if (date === today && Zk() && S.device.ip) kids.unshift(syncChip());
     const all = computeRange(date, date).filter(e => e.rows.length).map(e => ({ e, r: e.rows[0] }));
     if (!all.length) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'مفيش موظفين شغالين اليوم ده'), 'راجع تاريخ بداية وترك الشغل في شاشة الموظفين.')); return; }
     const isNeed = r => r.code === 'pending' || r.code === 'missing';
@@ -519,6 +552,42 @@
   }
   function lockMonth(m) { S.locked[m] = todayKey(); save(); render(); toast(`🔒 ${monthLabel(m)} اتقفل`); }
   function unlockMonth(m) { delete S.locked[m]; save(); render(); toast(`🔓 ${monthLabel(m)} اتفتح للتعديل`); }
+  function monthState(m) {
+    const lk = S.locked[m], pn = lk ? 0 : pendingIn(m).length;
+    return { lk, pn, s: lk ? `مقفول من ${fmtDate(lk)}` : pn ? `مفتوح · ${pn} ناقص` : 'مفتوح · متسجّل كامل' };
+  }
+  function lockRow(m, tag) {
+    const x = monthState(m);
+    return h('div', { class: 'li', style: 'cursor:default' }, h('span', { class: 'avatar' }, x.lk ? '🔒' : x.pn ? '⚠' : '✓'),
+      h('span', { class: 'grow' }, h('div', { class: 't' }, monthLabel(m), tag ? h('small', { class: 'muted' }, ' · ' + tag) : null), h('div', { class: 's' }, x.s)),
+      x.lk ? h('button', { class: 'btn sm', onclick: () => unlockMonth(m) }, 'فتح')
+        : h('button', { class: 'btn sm primary', onclick: () => x.pn ? closeFlow(m) : lockMonth(m) }, x.pn ? 'راجع' : 'اقفله'));
+  }
+  /** شبكة شهور السنة — بدل قايمة طويلة بتكبر كل شهر */
+  function monthsSheet(year) {
+    const sm = startMonth(), cur = monthOf(todayKey()), y0 = +sm.slice(0, 4), y1 = +cur.slice(0, 4);
+    let y = Math.min(Math.max(year || +prevMonth(cur).slice(0, 4), y0), y1), sel = '';
+    const draw = () => {
+      const tiles = [];
+      for (let i = 1; i <= 12; i++) {
+        const m = `${y}-${pad(i)}`, out = m < sm || m >= cur;
+        const x = out ? null : monthState(m);
+        tiles.push(h('button', { class: 'mt' + (out ? ' off' : '') + (x && x.lk ? ' lk' : '') + (x && x.pn ? ' pn' : '') + (sel === m ? ' on' : ''), disabled: out, onclick: () => { sel = m; draw(); } },
+          h('b', null, MONTHS[i - 1]), h('small', null, m === cur ? 'الحالي' : out ? '' : x.lk ? '🔒 مقفول' : x.pn ? `⚠ ${x.pn} ناقص` : '✓ كامل')));
+      }
+      const x = sel ? monthState(sel) : null;
+      $('sheet-in').replaceChildren(h('div', { class: 'grab' }), h('h2', null, 'الشهور'),
+        h('div', { class: 'yr-bar' }, h('button', { class: 'arrow', 'aria-label': 'السنة اللي قبلها', html: ICON.prev, disabled: y <= y0, onclick: () => { y--; sel = ''; draw(); } }),
+          h('b', null, y), h('button', { class: 'arrow', 'aria-label': 'السنة اللي بعدها', html: ICON.next, disabled: y >= y1, onclick: () => { y++; sel = ''; draw(); } })),
+        h('div', { class: 'mgrid' }, tiles),
+        sel ? h('div', { class: 'mt-act' }, h('div', { class: 'grow' }, h('b', null, monthLabel(sel)), h('div', { class: 'muted' }, x.s)),
+          x.lk ? h('button', { class: 'btn sm', onclick: () => { unlockMonth(sel); draw(); } }, '🔓 افتحه')
+            : x.pn ? h('button', { class: 'btn sm primary', onclick: () => closeFlow(sel) }, 'راجع') : h('button', { class: 'btn sm primary', onclick: () => { lockMonth(sel); draw(); } }, '🔒 اقفله'),
+          h('button', { class: 'btn sm', onclick: () => { $('sheet').close(); UI.month = sel; UI.rmode = 'month'; go('month'); } }, 'التقرير'))
+          : h('p', { class: 'muted', style: 'text-align:center' }, 'دوس على أي شهر'));
+    };
+    openSheet([]); draw();
+  }
   function closeFlow(m) {
     const items = closeItems(m); if (!items.length) { toast('مفيش حاجة ناقصة ✓'); return; }
     let i = 0; const done = new Set();
@@ -589,11 +658,11 @@
     const today = todayKey(), lastM = monthOf(addDays(monthOf(today) + '-01', -1));
     const pick = (fn) => { fn(); $('sheet').close(); render(); };
     const opt = (l, sub, fn, on) => h('button', { class: 'li' + (on ? ' on' : ''), onclick: () => pick(fn) }, h('span', { class: 'grow' }, h('div', { class: 't' }, l), sub ? h('div', { class: 's' }, sub) : null));
-    const mIn = h('input', { type: 'month', value: UI.month }), fIn = h('input', { type: 'date', value: UI.range.from }), tIn = h('input', { type: 'date', value: UI.range.to });
+    const mIn = h('input', { type: 'month', value: UI.month, min: startMonth(), max: monthOf(today) }), fIn = h('input', { type: 'date', value: UI.range.from, min: startDay() }), tIn = h('input', { type: 'date', value: UI.range.to, min: startDay() });
     openSheet([h('div', { class: 'grab' }), h('h2', null, 'الفترة'),
       h('div', { class: 'list' },
         opt('الشهر ده', monthLabel(monthOf(today)), () => { UI.rmode = 'month'; UI.month = monthOf(today); }, UI.rmode === 'month' && UI.month === monthOf(today)),
-        opt('الشهر اللي فات', monthLabel(lastM), () => { UI.rmode = 'month'; UI.month = lastM; }, UI.rmode === 'month' && UI.month === lastM),
+        lastM < startMonth() ? null : opt('الشهر اللي فات', monthLabel(lastM), () => { UI.rmode = 'month'; UI.month = lastM; }, UI.rmode === 'month' && UI.month === lastM),
         opt('آخر 7 أيام', null, () => { UI.rmode = 'range'; UI.range = { from: addDays(today, -6), to: today }; }),
         opt('آخر 30 يوم', null, () => { UI.rmode = 'range'; UI.range = { from: addDays(today, -29), to: today }; })),
       h('div', { class: 'sec-title' }, 'شهر معيّن'),
@@ -1155,7 +1224,8 @@
     const numIn = (key, min, max) => h('input', { type: 'number', min, max, inputmode: 'numeric', value: st[key], onchange: ev => { const v = parseInt(ev.target.value, 10); if (!isNaN(v) && v >= min) { st[key] = v; save(); toast('اتحفظ'); } } });
 
     const dataCard = h('div', { class: 'card' }, h('h2', null, 'ملفات الجهاز'),
-      row('الاعتماد على الجهاز من يوم', 'بصمات الجهاز قبل اليوم ده بتتجاهل (فترة التجربة) وتسجّلها يدوي', h('input', { type: 'date', value: st.deviceFrom || '', onchange: ev => { st.deviceFrom = ev.target.value; save(); toast('اتحفظ'); } })),
+      row('بداية الحساب', 'أول يوم التطبيق بيحسب منه — مفيش أي شهر قبله بيظهر', h('input', { type: 'date', value: st.startFrom || '', max: todayKey(), onchange: ev => { if (!ev.target.value) return; const old = st.startFrom; st.startFrom = ev.target.value; clampToStart(old); save(); render(); toast('اتحفظ'); } })),
+      row('الاعتماد على الجهاز من يوم', 'بصمات الجهاز قبل اليوم ده بتتجاهل (فترة التجربة) وتسجّلها يدوي', h('input', { type: 'date', value: st.deviceFrom || '', onchange: ev => { st.deviceFrom = ev.target.value; if (st.deviceFrom && st.deviceFrom < (st.startFrom || '9')) { const old = st.startFrom; st.startFrom = st.deviceFrom.slice(0, 7) + '-01'; clampToStart(old); } save(); render(); toast('اتحفظ'); } })),
       h('div', { class: 'btns', style: 'margin-top:8px' }, h('button', { class: 'btn primary', onclick: () => $('file').click() }, 'رفع ملف الجهاز')),
       S.imports.length ? h('ul', { class: 'file-list' }, S.imports.slice(0, 5).map(i => h('li', null, `${fmtDate(i.at)} — ${i.name} — ${i.count} بصمة جديدة`))) : h('p', { class: 'muted' }, 'لسه مرفعتش ملفات. كل ملف بترفعه بيتجمع مع اللي قبله.'));
 
@@ -1253,13 +1323,14 @@
         h('button', { class: 'btn sm', onclick: () => { st.holidays.push({ id: 'h' + Date.now(), name: '', from: todayKey(), to: todayKey(), on: true }); save(); render(); } }, '+ إجازة رسمية'),
         [yr, yr + 1].map(y => h('button', { class: 'btn sm', onclick: () => { let n = 0; for (const [md, name] of FIXED) { const d = `${y}-${md}`; if (!st.holidays.some(x => x.from === d)) { st.holidays.push({ id: 'h' + y + md, name, from: d, to: d, on: true }); n++; } } save(); render(); toast(n ? `اتضاف ${n} إجازات ثابتة لسنة ${y}` : 'موجودين قبل كده'); } }, `أضف الإجازات الثابتة ${y}`))),
       h('p', { class: 'muted', style: 'margin:8px 0 0' }, 'الأعياد اللي بتتغير كل سنة (الفطر، الأضحى، المولد، رأس السنة الهجرية، شم النسيم) ضيفها لما تتعلن.'));
-    // الشهور المقفولة
-    const months = []; { const firstStart = Object.values(S.employees).map(e => e.start).filter(Boolean).sort()[0] || todayKey(); let m = monthOf(firstStart); const cur = monthOf(todayKey()); while (m <= cur && months.length < 36) { months.push(m); const [y, mo] = m.split('-').map(Number), t = new Date(y, mo, 1); m = `${t.getFullYear()}-${pad(t.getMonth() + 1)}`; } }
-    const lockCard = h('div', { class: 'card' }, h('h2', null, '🔒 الشهور المقفولة'),
+    // الشهور المقفولة: الشهر اللي فات بس + الباقي في شبكة سنة
+    const curM = monthOf(todayKey()), sm = startMonth(), lastM = prevMonth(curM);
+    const lockCard = h('div', { class: 'card' }, h('h2', null, '🔒 قفل الشهور'),
       h('p', { class: 'muted', style: 'margin-top:-4px' }, 'الشهر المقفول محدش يقدر يعدّل فيه بالغلط، وأي بصمات جديدة ليه بتتجاهل. تقدر تفتحه في أي وقت.'),
-      h('div', { class: 'list' }, months.slice().reverse().map(m => { const lk = S.locked[m], pn = lk ? 0 : pendingIn(m).length;
-        return h('div', { class: 'li', style: 'cursor:default' }, h('span', { class: 'grow' }, h('div', { class: 't' }, monthLabel(m)), h('div', { class: 's' }, lk ? `مقفول من ${fmtDate(lk)}` : m === monthOf(todayKey()) ? 'الشهر الحالي' : pn ? `مفتوح · ${pn} ناقص` : 'مفتوح · متسجّل كامل')),
-          m === monthOf(todayKey()) && !lk ? null : h('button', { class: 'btn sm' + (lk ? '' : ' primary'), onclick: () => lk ? unlockMonth(m) : lockMonth(m) }, lk ? 'فتح' : 'اقفله')); })));
+      lastM < sm ? h('p', { class: 'muted' }, `لسه مفيش شهر خلص — بدأت من ${monthLabel(sm)}.`) :
+        h('div', { class: 'list' }, lockRow(lastM, 'الشهر اللي فات'),
+          lastM > sm ? h('button', { class: 'li', onclick: () => monthsSheet() }, h('span', { class: 'avatar' }, '🗓'), h('span', { class: 'grow' }, h('div', { class: 't' }, 'الشهور القديمة'),
+            h('div', { class: 's' }, (() => { let n = 0, l = 0; for (let m = sm; m < lastM; m = nextMonth(m)) { n++; if (S.locked[m]) l++; } return `${n} شهر · ${l} مقفول`; })())), h('span', { html: ICON.chev, style: 'display:inline-flex' })) : null));
     // المساحة
     let used = 0; try { used = (localStorage.getItem(KEY) || '').length * 2; } catch (e) { /* ignore */ }
     const cap = 5 * 1024 * 1024, pct = Math.min(100, Math.round(used / cap * 100));
@@ -1269,7 +1340,7 @@
     const lockAppCard = h('div', { class: 'card' }, h('h2', null, '🔐 قفل التطبيق'),
       row(lc && lc.on ? 'القفل شغال' : 'القفل مقفول', lc && lc.on ? (lc.bio ? 'بالرقم السري والبصمة — بيقفل لما تسيب التطبيق أكتر من دقيقة' : 'بالرقم السري — بيقفل لما تسيب التطبيق أكتر من دقيقة') : 'محدش يفتح بيانات الموظفين من غير رقمك أو بصمتك',
         h('button', { class: 'btn sm' + (lc && lc.on ? '' : ' primary'), onclick: lockSetupSheet }, lc && lc.on ? 'تعديل' : 'شغّله')));
-    $('tab-settings').replaceChildren(styleCard, lockAppCard, dataCard, shiftCard, daysCard, holCard, rulesCard, lockCard, remindCard, backupCard, dangerCard);
+    $('tab-settings').replaceChildren(styleCard, lockAppCard, deviceCard(), dataCard, shiftCard, daysCard, holCard, rulesCard, lockCard, remindCard, backupCard, dangerCard);
     if (isNative()) { listAutoBackups(); remindStatus(); }
   }
 
@@ -1343,6 +1414,110 @@
         }) }, 'استرجاع')))));
   }
 
+  /* ======================= جهاز البصمة: سحب مباشر على الشبكة ======================= */
+  const Zk = () => isNative() ? plugin('Zk') : null;
+  const devArgs = timeout => ({ ip: String(S.device.ip || '').trim(), port: +S.device.port || 4370, password: String(S.device.password || '').trim(), timeout });
+  const ZK_ERR = { TIMEOUT: 'الجهاز مردّش — اتأكد إن الموبايل على واي فاي المحل وإن الـ IP صح', UNREACHABLE: 'مش لاقي الجهاز على الشبكة — اتأكد إنك على واي فاي المحل', AUTH: 'كلمة سر الاتصال (Comm Key) غلط' };
+  const zkErr = e => { const m = String((e && e.message) || e || ''); for (const k in ZK_ERR) if (m.includes(k)) return ZK_ERR[k]; return 'حصلت مشكلة: ' + m; };
+  const ZK_TYPE = { 0: 'in', 1: 'out', 2: 'out', 3: 'in', 4: 'in', 5: 'out' }; // حضور، انصراف، خروج بريك، رجوع بريك، حضور إضافي، انصراف إضافي
+  const nowStamp = () => { const d = new Date(); return `${todayKey()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  /** فرق ساعة الجهاز عن الموبايل بالدقايق (موجب = الجهاز قدّام) */
+  const clockOff = t => { const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/.exec(t || ''); if (!m) return null; return Math.round((new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]) - Date.now()) / 60000); };
+  const offText = o => `ساعة الجهاز ${o > 0 ? 'قدّام' : 'متأخرة'} ${Math.abs(o) >= 60 ? E.fmtDur(Math.abs(o)) + ' ساعة' : Math.abs(o) + ' دقيقة'} عن الموبايل`;
+  function zkParsed(r) {
+    const names = {};
+    for (const u of r.users || []) if (u.id && u.name && !/^NN-/.test(u.name) && !/�/.test(u.name)) names[u.id] = u.name;
+    const punches = [];
+    for (const l of String(r.lines || '').split('\n')) {
+      const [id, t, pu] = l.split('|'), m = /^(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2})/.exec(t || '');
+      if (id && m) punches.push({ id, name: names[id] || '', key: m[1], min: +m[2] * 60 + +m[3], type: ZK_TYPE[+pu] || null });
+    }
+    return { kind: 'raw', punches, dates: [], names, hasState: true, device: true };
+  }
+  let pulling = false, lastTry = 0;
+  async function pullDevice(auto) {
+    const Z = Zk(); if (!Z || pulling || !S.device.ip) return;
+    pulling = true; lastTry = Date.now(); UI.pullState = 'run'; if (UI.tab === 'day' || UI.tab === 'settings') render();
+    let from = takeFrom() || todayKey();
+    const lp = S.device.lastPull && S.device.lastPull.at;
+    if (auto && lp) { const d = addDays(lp.slice(0, 10), -2); if (d > from) from = d; }
+    if (!auto) toast('بسحب من الجهاز…');
+    try {
+      const r = await Z.pull(Object.assign(devArgs(auto ? 2500 : 6000), { from: from + ' 00:00:00' }));
+      const parsed = zkParsed(r), off = clockOff(r.time);
+      S.device.clock = off; S.device.seen = nowStamp();
+      parsed.note = `الجهاز فيه ${(+r.total).toLocaleString('ar-EG')} بصمة — اتجاب منهم ${(+r.kept).toLocaleString('ar-EG')} من ${fmtDate(from)}` + (off != null && Math.abs(off) >= 3 ? ` · ⚠ ${offText(off)}` : '');
+      const ids = new Set(parsed.punches.map(p => p.id));
+      const newIds = [...ids].filter(id => !S.employees[id] && !S.removed[id]);
+      const existing = new Set(S.punches.map(pKey)), tf = takeFrom();
+      const fresh = parsed.punches.filter(p => { const d = effDate(p); return !existing.has(pKey(p)) && (!tf || d >= tf) && !isLocked(d) && !S.removed[p.id]; });
+      if (auto && !newIds.length) {
+        const added = fresh.length ? mergePunches(fresh) : 0;
+        S.device.lastPull = { at: nowStamp(), count: added };
+        save(); UI.pullState = ''; render();
+        if (added) toast(`⟳ اتسحب ${added} بصمة جديدة من الجهاز`);
+        return;
+      }
+      UI.pullState = ''; save(); render();
+      if (!parsed.punches.length && !newIds.length) { S.device.lastPull = { at: nowStamp(), count: 0 }; save(); render(); toast('مفيش بصمات جديدة على الجهاز ✓'); return; }
+      if (!fresh.length && !newIds.length) { S.device.lastPull = { at: nowStamp(), count: 0 }; save(); render(); toast('كل البصمات متسجلة قبل كده ✓'); return; }
+      expectKind = '';
+      importPreview(parsed, 'سحب من جهاز البصمة');
+    } catch (e) {
+      UI.pullState = auto ? '' : 'err'; S.device.err = zkErr(e); render();
+      if (!auto) toast(zkErr(e));
+    } finally { pulling = false; }
+  }
+  function autoPull() { if (S.device.auto && Zk() && S.device.ip && Date.now() - lastTry > 5 * 60000) pullDevice(true); }
+  function syncChip() {
+    const lp = S.device.lastPull, run = UI.pullState === 'run';
+    const when = lp ? (lp.at.slice(0, 10) === todayKey() ? 'النهارده ' + fmt12(E.hm(lp.at.slice(11))) : fmtDate(lp.at.slice(0, 10))) : '';
+    return h('button', { class: 'sync-chip' + (run ? ' run' : ''), disabled: run, onclick: () => pullDevice(false) },
+      h('span', { class: 'sc-i' }, '⟳'), run ? 'بسحب من الجهاز…' : lp ? `آخر سحب من الجهاز: ${when}` : 'اسحب البصمات من الجهاز');
+  }
+  function deviceCard() {
+    const D = S.device;
+    if (!isNative()) return h('div', { class: 'card' }, h('h2', null, '📡 جهاز البصمة'), h('p', { class: 'muted' }, 'السحب المباشر من الجهاز شغال من التطبيق المتسطّب على الموبايل بس. من هنا ارفع ملف الجهاز.'));
+    const fld = (l, el) => h('div', null, h('label', { class: 'f' }, l), el);
+    const setD = (k, v) => { D[k] = v; save(); };
+    const autoSel = h('select', { onchange: ev => { setD('auto', ev.target.value === '1'); } }, h('option', { value: '1' }, 'شغال'), h('option', { value: '0' }, 'مقفول')); autoSel.value = D.auto ? '1' : '0';
+    const info = UI.devInfo;
+    const res = UI.devTest === 'run' ? h('div', { class: 'dev-res' }, '… بجرّب أوصل للجهاز')
+      : info && info.err ? h('div', { class: 'dev-res bad' }, h('b', null, '✗ ' + info.err), h('small', null, 'الموبايل لازم يكون على نفس الراوتر اللي الجهاز متوصل بيه. على الكمبيوتر: برنامج البصمة ← Device ← IP Address.'))
+      : info ? h('div', { class: 'dev-res ok' }, h('b', null, `✓ متصل${info.name ? ' — ' + info.name : ''}`),
+        h('div', { class: 'dev-grid' }, [['البصمات', (+info.records).toLocaleString('ar-EG') + (info.recCap ? ` من ${(+info.recCap).toLocaleString('ar-EG')}` : '')], ['الموظفين', info.users], ['السيريال', info.serial || '—'], ['ساعة الجهاز', info.time ? info.time.slice(11, 16) : '—']].map(([a, b]) => h('div', null, h('small', null, a), h('span', { dir: 'ltr' }, String(b))))),
+        info.off != null && Math.abs(info.off) >= 3 ? h('div', { class: 'warn-line' }, '⚠ ' + offText(info.off) + ' — دوس "ظبط ساعة الجهاز"') : null) : null;
+    const lp = D.lastPull;
+    return h('div', { class: 'card' }, h('h2', null, '📡 جهاز البصمة'),
+      h('div', { class: 'grid2' }, fld('IP الجهاز', h('input', { value: D.ip || '', dir: 'ltr', inputmode: 'decimal', placeholder: '192.168.1.201', onchange: ev => setD('ip', ev.target.value.trim()) })),
+        fld('Port', h('input', { type: 'number', dir: 'ltr', value: D.port || 4370, onchange: ev => setD('port', +ev.target.value || 4370) }))),
+      h('div', { style: 'margin-top:8px' }, fld('كلمة سر الاتصال (Comm Key)', h('input', { value: D.password || '', dir: 'ltr', inputmode: 'numeric', placeholder: 'فاضية', onchange: ev => setD('password', ev.target.value.trim()) }))),
+      row('سحب تلقائي', 'أول ما تفتح التطبيق وانت على واي فاي المحل', autoSel),
+      h('div', { class: 'muted', style: 'margin:6px 0' }, lp ? `آخر سحب: ${fmtDate(lp.at.slice(0, 10))} ${fmt12(E.hm(lp.at.slice(11)))} — ${lp.count} بصمة جديدة` : 'لسه مسحبتش من الجهاز'),
+      res,
+      h('div', { class: 'btns', style: 'margin-top:10px' },
+        h('button', { class: 'btn primary', disabled: UI.pullState === 'run', onclick: () => pullDevice(false) }, UI.pullState === 'run' ? 'بسحب…' : '⟳ اسحب دلوقتي'),
+        h('button', { class: 'btn', onclick: testDevice }, 'اختبار الاتصال'),
+        h('button', { class: 'btn', onclick: ev => confirmBtn(ev.currentTarget, 'متأكد؟ اضغط تاني', setDeviceTime) }, 'ظبط ساعة الجهاز')));
+    function row(title, sub, ctrl) { return h('div', { class: 'set-row' }, h('div', { class: 'lbl' }, h('b', null, title), h('span', null, sub)), ctrl); }
+  }
+  async function testDevice() {
+    const Z = Zk(); if (!Z) return;
+    UI.devTest = 'run'; UI.devInfo = null; render();
+    try { const r = await Z.info(devArgs(5000)); r.off = clockOff(r.time); S.device.clock = r.off; UI.devInfo = r; S.device.seen = nowStamp(); save(); }
+    catch (e) { UI.devInfo = { err: zkErr(e) }; }
+    UI.devTest = ''; render();
+  }
+  async function setDeviceTime() {
+    const Z = Zk(); if (!Z) return;
+    const d = new Date();
+    try {
+      const r = await Z.setTime(Object.assign(devArgs(5000), { y: d.getFullYear(), mo: d.getMonth() + 1, d: d.getDate(), h: d.getHours(), mi: d.getMinutes(), s: d.getSeconds() }));
+      S.device.clock = clockOff(r.time); if (UI.devInfo && !UI.devInfo.err) { UI.devInfo.time = r.time; UI.devInfo.off = S.device.clock; }
+      save(); render(); toast(r.ok ? '✓ ساعة الجهاز اتظبطت على ساعة الموبايل' : 'الجهاز مقبلش تغيير الساعة');
+    } catch (e) { toast(zkErr(e)); }
+  }
+
   /* ======================= رفع ملف الجهاز ======================= */
   let expectKind = '';
   $('upload-btn').addEventListener('click', uploadChooser);
@@ -1353,7 +1528,9 @@
     const opt = (kind, title, tag, desc, sample) => h('button', { class: 'up-opt' + (tag ? ' rec' : ''), onclick: () => { expectKind = kind; $('sheet').close(); $('file').click(); } },
       h('div', { class: 'up-h' }, h('b', null, title), tag ? h('span', { class: 'up-tag' }, tag) : null), h('p', null, desc), sample);
     openSheet([h('div', { class: 'grab' }), h('h2', { style: 'margin-bottom:2px' }, 'رفع ملف الجهاز'), h('p', { class: 'muted', style: 'margin:0 0 12px' }, 'اختار نوع الملف اللي طلّعته من الجهاز'),
-      opt('raw', 'سجل البصمات', 'الأحسن', 'كل بصمة في سطر بوقتها ونوعها (حضور/انصراف). بيشتغل مع الشيفتين.', xlsSample(['AC-No.', 'Name', 'Time', 'State'], [['102', 'SONDES', '2026/11/06 03:36 م', 'C/In'], ['102', 'SONDES', '2026/11/06 06:03 م', 'C/Out']])),
+      Zk() && S.device.ip ? h('button', { class: 'up-opt rec', onclick: () => { $('sheet').close(); pullDevice(false); } }, h('div', { class: 'up-h' }, h('b', null, '📡 اسحب من الجهاز على طول'), h('span', { class: 'up-tag' }, 'من غير ملف')),
+        h('p', null, `الموبايل لازم يكون على واي فاي المحل · ${S.device.ip}`)) : null,
+      opt('raw', 'سجل البصمات', Zk() ? null : 'الأحسن', 'كل بصمة في سطر بوقتها ونوعها (حضور/انصراف). بيشتغل مع الشيفتين.', xlsSample(['AC-No.', 'Name', 'Time', 'State'], [['102', 'SONDES', '2026/11/06 03:36 م', 'C/In'], ['102', 'SONDES', '2026/11/06 06:03 م', 'C/Out']])),
       opt('report', 'تقرير الحضور', null, 'سطر لكل موظف في اليوم فيه حضور وانصراف. الجهاز بيظبطه على شيفت واحد، فممكن يضيّع بصمات المسائي.', xlsSample(['AC-No.', 'Name', 'Date', 'Clock In', 'Clock Out'], [['102', 'SONDES', '2026/11/06', '10:05', '18:02']])),
       h('div', { class: 'up-note' }, '💡 مش متأكد؟ اختار أي واحد — لو الملف طلع من النوع التاني، التطبيق هيقولك ويقراه صح.')]);
   }
@@ -1378,7 +1555,7 @@
   /** اليوم اللي البصمة بتتحسب عليه (البصمة بعد 12 بالليل وقبل آخر اليوم تتبع اليوم اللي قبله) */
   const effDate = p => p.min < (S.settings.dayCutHour ?? 5) * 60 ? addDays(p.key, -1) : p.min >= 1440 ? addDays(p.key, 1) : p.key;
   function importPreview(parsed, fname) {
-    const df = S.settings.deviceFrom || '', existing = new Set(S.punches.map(pKey)), seen = new Set();
+    const df = takeFrom(), existing = new Set(S.punches.map(pKey)), seen = new Set();
     const ps = [...parsed.punches].sort((a, b) => a.key.localeCompare(b.key) || a.min - b.min || a.id.localeCompare(b.id, undefined, { numeric: true }));
     let fresh = 0, dup = 0, already = 0, before = 0; const days = new Set(), notes = new Map();
     for (const p of ps) {
@@ -1411,6 +1588,7 @@
       $('sheet-in').replaceChildren(
         h('div', { class: 'cf-top' }, h('b', null, 'راجع قبل الحفظ'), h('button', { class: 'note-x', 'aria-label': 'إلغاء', onclick: () => $('sheet').close() }, '×')),
         h('div', { class: 'muted', style: 'margin:-6px 0 10px', dir: 'auto' }, fname),
+        parsed.note ? h('div', { class: 'dev-note' }, parsed.note) : null,
         mismatch ? h('div', { class: 'warn-line', style: 'margin-bottom:8px' }, `اخترت "${KIND_NAME[expectKind]}" بس الملف طلع "${KIND_NAME[parsed.kind]}" — اتقرا كـ "${KIND_NAME[parsed.kind]}".`) : null,
         h('div', { class: 'qchips', style: 'margin-bottom:10px' }, h('span', { class: 'mini ok' }, '✓ ' + KIND_NAME[parsed.kind]),
           h('span', { class: 'mini' }, range.from === range.to ? longDate(range.from) : `${fmtDate(range.from)} ← ${fmtDate(range.to)}`)),
@@ -1433,7 +1611,7 @@
   }
   const fmt12 = min => { const m = ((min % 1440) + 1440) % 1440, hh = Math.floor(m / 60), mm = m % 60; return `${hh % 12 || 12}:${pad(mm)} ${hh < 12 ? 'ص' : 'م'}`; };
   function applyImport(parsed, fname, accept, newIds) {
-    const range = E.dataRange(parsed), df = S.settings.deviceFrom || '';
+    const range = E.dataRange(parsed) || { from: todayKey(), to: todayKey() }, df = takeFrom();
     const first = {};
     for (const p of parsed.punches) { const d = effDate(p); if (d >= df && (!first[p.id] || d < first[p.id])) first[p.id] = d; }
     let addedEmp = 0;
@@ -1444,7 +1622,8 @@
       if (!S.employees[id]) { S.employees[id] = { name: parsed.names[id] || '', off: '', shift: '', hours: '', start: first[id] || (range.from > df ? range.from : df), end: '' }; addedEmp++; }
       else if (!S.employees[id].name && parsed.names[id]) S.employees[id].name = parsed.names[id];
     }
-    const added = mergePunches(parsed.punches.filter(p => !S.removed[p.id] && !isLocked(effDate(p))));
+    const added = mergePunches(parsed.punches.filter(p => { const d = effDate(p); return !S.removed[p.id] && !isLocked(d) && (!df || d >= df); }));
+    if (parsed.device) S.device.lastPull = { at: nowStamp(), count: added };
     S.imports.unshift({ name: fname, at: todayKey(), count: added, from: range.from, to: range.to, kind: parsed.kind }); S.imports = S.imports.slice(0, 50);
     save();
     toast(`اتحفظ: ${added} بصمة جديدة` + (addedEmp ? ` و${addedEmp} موظف جديد — كمّل بياناتهم` : ''));
@@ -1663,6 +1842,7 @@
   render();
   showLock();
   autoBackup();
+  setTimeout(autoPull, 1800);
   if (isNative()) (async () => {
     const L = plugin('LocalNotifications'), A = plugin('App');
     if (L) {
@@ -1679,7 +1859,7 @@
     const t = todayKey();
     if (UI.lastSeen && UI.lastSeen !== t && UI.date === UI.lastSeen) UI.date = t; // يوم جديد
     if (UI.lastSeen && monthOf(UI.lastSeen) !== monthOf(t) && UI.month === monthOf(UI.lastSeen)) UI.month = monthOf(t); // شهر جديد
-    UI.lastSeen = t; render(); autoBackup();
+    UI.lastSeen = t; render(); autoBackup(); autoPull();
   });
   UI.lastSeen = todayKey();
   if (!isNative() && 'serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
