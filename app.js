@@ -103,7 +103,7 @@
   const monthOf = k => k.slice(0, 7);
   const empName = id => (S.employees[id] && S.employees[id].name) || S.names[id] || ('موظف ' + id);
   const sortedIds = () => Object.keys(S.employees).sort((a, b) => (+a - +b) || a.localeCompare(b));
-  const APP_VER = 'v1.16';
+  const APP_VER = 'v1.17';
   const isNative = () => !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
   const plugin = n => (window.Capacitor && window.Capacitor.Plugins) ? window.Capacitor.Plugins[n] : null;
   let toastT = 0;
@@ -1088,7 +1088,7 @@
 
   /* ======================= المرتبات والمديونيات ======================= */
   // القواعد (كلها بتتغير من الإعدادات). الكشف المعتمد بيتحفظ بأرقامه ومبيتغيرش.
-  const PAY_DEF = { dayDiv: 30, absentDays: 2, excusedDays: 1, leaveDays: 1, t1: 60, t2: 120, t3: 240, f1: 0.25, f2: 0.5, f3: 1, repCount: 6, repMin: 30, repDays: 1, otRate: 1, roundTo: 10, target: 0, teamPct: 0.5, products: [] };
+  const PAY_DEF = { waPkg: 'com.whatsapp.w4b', dayDiv: 30, absentDays: 2, excusedDays: 1, leaveDays: 1, t1: 60, t2: 120, t3: 240, f1: 0.25, f2: 0.5, f3: 1, repCount: 6, repMin: 30, repDays: 1, otRate: 1, roundTo: 10, target: 0, teamPct: 0.5, products: [] };
   function payCfg() {
     S.pay = S.pay || {}; S.pay.cfg = Object.assign(clone(PAY_DEF), S.pay.cfg || {});
     S.pay.months = S.pay.months || {}; S.pay.retro = S.pay.retro || {}; S.debts = S.debts || [];
@@ -1234,11 +1234,13 @@
         h('button', { onclick: () => dedSheet(m) }, 'خصومات', h('b', null, sgn(tot(l => l.amount < 0 && !l.debt))), h('i', null, '‹')),
         h('button', { onclick: () => debtsMonthSheet(m) }, 'أقساط وسلف', h('b', null, sgn(tot(l => !!l.debt))), h('i', null, '‹')))));
     ids.forEach((id, i) => {
-      const s = slips[i], stt = sts[i], warn = s.changed ? 'البصمات اتغيرت بعد الاعتماد' : s.pending ? `${s.pending} يوم ناقص تسجيل` : s.lines.some(l => l.edited) ? 'فيه بند معدّل' : '';
+      const s = slips[i], stt = sts[i], sent = slipState(m, id).sentAt, warn = s.changed ? 'البصمات اتغيرت بعد الاعتماد' : s.pending ? `${s.pending} يوم ناقص تسجيل` : sent && stt !== 'draft' ? '💬 اتبعت واتساب ✓' : s.lines.some(l => l.edited) ? 'فيه بند معدّل' : '';
       out.push(h('button', { class: 'pay-row', onclick: () => slipSheet(m, id) }, h('span', { class: 'ec-av', style: 'background:' + empColor(id) }, initial(empName(id))),
         h('span', { class: 'grow' }, h('b', { dir: 'auto' }, empName(id)), h('small', { class: warn && (s.changed || s.pending) ? 'wr' : '' }, warn || `الأساسي ${fmtN(s.base)}`)),
         h('span', { class: 'net' }, h('b', null, fmtN(s.net)), h('span', { class: 'pb ' + stt }, stt === 'paid' ? '💸 اتصرف' : stt === 'approved' ? '✓ معتمد' : 'مسودة'))));
     });
+    const unsent = ids.filter((id, i) => sts[i] !== 'draft' && !slipState(m, id).sentAt);
+    if (unsent.length) out.push(h('button', { class: 'btn wa block', style: 'width:100%;margin:4px 0 8px', onclick: () => { UI.waQueue = unsent.slice(); sendWA(m, unsent[0]); } }, `💬 ابعت واتساب لكل المعتمدين اللي متبعتلهمش (${unsent.length})`));
     if (noSal.length) out.push(h('p', { class: 'muted', style: 'font-size:12.5px;margin:6px 4px' }, `من غير مرتب متسجّل: ${noSal.map(empName).join('، ')} — من ملف الموظف ← 💰 الفلوس.`));
     out.push(h('div', { class: 'btns', style: 'margin-top:8px' },
       paid ? h('button', { class: 'btn', style: 'flex:1', onclick: ev => confirmBtn(ev.currentTarget, 'متأكد؟ الأقساط هترجع', () => unpayMonth(m)) }, `↶ إلغاء الصرف (${fmtDate(md.paid.slice(0, 10))})`)
@@ -1394,10 +1396,12 @@
         draft ? h('button', { class: 'btn sm', style: 'margin:8px 14px', onclick: addExtra }, '+ بند (مكافأة / خصم)') : null,
         h('div', { class: 'slip-net' }, h('span', null, 'الصافي'), h('b', null, fmtN(s.net) + ' ج.م')),
         h('div', { class: 'btns', style: 'padding:12px 14px' },
-          draft ? h('button', { class: 'btn primary', style: 'flex:2', onclick: () => { approveSlip(m, id); render(); const nx = ids.find((x, j) => j > i && slipState(m, x).status === 'draft'); toast('✓ اتعتمد'); if (nx) slipSheet(m, nx); else slipSheet(m, id); } }, '✓ اعتمد الكشف') : null,
-          !draft ? h('button', { class: 'btn primary', style: 'flex:1', onclick: () => slipExport(m, id, 'save') }, '📥 حفظ') : null,
+          draft ? h('button', { class: 'btn primary', style: 'flex:2', onclick: () => { approveSlip(m, id); render(); toast('✓ اتعتمد'); slipSheet(m, id); } }, '✓ اعتمد الكشف') : null,
+          !draft ? h('button', { class: 'btn wa', style: 'flex:1 1 100%', onclick: () => sendWA(m, id) }, st.sentAt ? `💬 اتبعت ${fmt12(E.hm(st.sentAt.slice(11)))} — ابعت تاني` : `💬 ابعت لـ ${empName(id)} على واتساب`) : null,
+          !draft ? h('button', { class: 'btn', style: 'flex:1', onclick: () => slipExport(m, id, 'save') }, '📥 حفظ') : null,
           !draft ? h('button', { class: 'btn', style: 'flex:1', onclick: () => slipExport(m, id, 'share') }, '📤 مشاركة') : null,
-          st.status === 'approved' ? h('button', { class: 'btn ghost', onclick: () => { unapproveSlip(m, id); render(); slipSheet(m, id); } }, 'إلغاء الاعتماد') : null)),
+          st.status === 'approved' ? h('button', { class: 'btn ghost', onclick: () => { unapproveSlip(m, id); render(); slipSheet(m, id); } }, 'إلغاء الاعتماد') : null),
+        !draft && ids.find((x, j) => j > i && slipState(m, x).status === 'draft') ? h('button', { class: 'btn ghost block', style: 'width:calc(100% - 28px);margin:0 14px 12px', onclick: () => slipSheet(m, ids.find((x, j) => j > i && slipState(m, x).status === 'draft')) }, `الكشف اللي بعده ← ${empName(ids.find((x, j) => j > i && slipState(m, x).status === 'draft'))}`) : null),
       draft ? h('p', { class: 'muted', style: 'font-size:12.5px;margin:8px 2px' }, '✎ أي بند تقدر تعدّله أو تشيله — الرقم المحسوب بيفضل باين. الحفظ والإرسال بيتفتحوا بعد الاعتماد.') : null);
     if (!$('sheet').open) $('sheet').showModal();
   }
@@ -1433,6 +1437,48 @@
       await (dest === 'save' ? saveFiles(f) : shareFiles(f));
       if (dest === 'share') { slipState(m, id).sentAt = nowStamp(); save(); }
     } catch (e) { console.error(e); toast('مقدرتش أعمل الصورة: ' + (e.message || e)); }
+  }
+  /** 01xxxxxxxxx → 201xxxxxxxxx (واتساب عايز الرقم بكود البلد) */
+  function waPhone(raw) {
+    let d = String(raw || '').replace(/[^\d+]/g, ''); if (!d) return '';
+    if (d.startsWith('+')) return d.slice(1).replace(/\D/g, '');
+    if (d.startsWith('00')) return d.slice(2);
+    if (d.length === 11 && d.startsWith('01')) return '20' + d.slice(1);
+    if (d.length === 10 && d.startsWith('1')) return '20' + d;
+    return d;
+  }
+  function phoneSheet(id, then) {
+    const inp = h('input', { type: 'tel', inputmode: 'tel', dir: 'ltr', class: 'big-in', placeholder: '01xxxxxxxxx', value: S.employees[id].phone || '' });
+    openSheet([h('div', { class: 'grab' }), h('h2', null, 'رقم واتساب ' + empName(id)), h('p', { class: 'muted', style: 'margin-top:-6px' }, 'بيتحفظ في بيانات الموظف ومش هيتسأل تاني.'), inp,
+      h('button', { class: 'btn primary block', style: 'width:100%;margin-top:12px', onclick: () => { const v = inp.value.trim(); if (waPhone(v).length < 10) { toast('الرقم مش مظبوط'); return; } S.employees[id].phone = v; save(); $('sheet').close(); then(); } }, 'حفظ وابعت')]);
+    setTimeout(() => inp.focus(), 150);
+  }
+  /** يفتح واتساب على شات الموظف والكشف جاهز — انت بتدوس إرسال بس */
+  async function sendWA(m, id) {
+    const e = S.employees[id], ph = waPhone(e && e.phone);
+    if (!ph) { phoneSheet(id, () => sendWA(m, id)); return; }
+    const st = slipState(m, id), s = shownSlip(m, id);
+    try {
+      toast('بفتح واتساب…');
+      const c = await slipCanvas(m, id), b64 = c.toDataURL('image/png').split(',')[1];
+      const text = `كشف مرتب ${monthLabel(m)} — الصافي ${fmtN(s.net)} ج.م`;
+      const Sv = isNative() ? plugin('Saver') : null;
+      if (Sv && Sv.whatsapp) await Sv.whatsapp({ data: b64, name: `salary_${m}_${id}.png`, mime: 'image/png', phone: ph, text, pkg: payCfg().waPkg || 'com.whatsapp.w4b' });
+      else { await saveFile(`salary_${m}_${id}.png`, 'image/png', b64); window.open(`https://wa.me/${ph}?text=${encodeURIComponent(text)}`, '_blank'); }
+      st.sentAt = nowStamp(); save();
+      const ids = (UI.waQueue || []).filter(x => x !== id); UI.waQueue = ids.length ? ids : null; UI.waLast = { m, id };
+      if ($('sheet').open) $('sheet').close();
+      render();
+    } catch (err) { toast(/NO_WHATSAPP/.test(String(err && err.message)) ? 'واتساب مش متسطّب على الموبايل' : 'مقدرتش أفتح واتساب: ' + ((err && err.message) || err)); }
+  }
+  /** لما ترجع من واتساب: يقولك اتبعت ويعرض اللي بعده */
+  function waReturn() {
+    const last = UI.waLast; if (!last) return; UI.waLast = null;
+    const q = UI.waQueue || [], next = q[0];
+    if (!next) { toast(`✓ اتبعت لـ ${empName(last.id)}`); return; }
+    openSheet([h('div', { class: 'grab' }), h('div', { class: 'wa-next' }, h('div', { class: 'wa-ok' }, '✓'), h('b', null, `اتبعت لـ ${empName(last.id)}`), h('p', { class: 'muted' }, `فاضل ${q.length} · اللي بعده ${empName(next)}`)),
+      h('button', { class: 'btn wa block', style: 'width:100%', onclick: () => sendWA(last.m, next) }, `💬 ابعت لـ ${empName(next)}`),
+      h('button', { class: 'btn ghost block', style: 'width:100%;margin-top:6px', onclick: () => { UI.waQueue = null; $('sheet').close(); } }, 'وقّف')]);
   }
   async function payExcel(m) {
     try { await needXLSX(); } catch (e) { toast(e.message); return; }
@@ -1547,6 +1593,8 @@
       row('عدد المرات', 'كل كام مرة يتخصم', num('repCount', 1)), row('أقل تأخير يتحسب', 'بالدقايق بعد السماح', num('repMin', 1)), row('الخصم', 'كام يوم', num('repDays', 0.25)),
       h('div', { class: 'sec-title' }, 'الزيادة والتقريب'),
       row('قيمة ساعة الزيادة', '× قيمة ساعة الخصم', num('otRate', 0.25)), row('تقريب نسبة الأرباح', 'لأقرب كام جنيه', num('roundTo', 1)),
+      h('div', { class: 'sec-title' }, 'إرسال الكشوف'),
+      row('بيتبعت من', 'التطبيق اللي بيفتح لما تدوس "ابعت على واتساب"', (() => { const sel = h('select', { onchange: ev => { S.pay.cfg.waPkg = ev.target.value; save(); toast('اتحفظ'); } }, h('option', { value: 'com.whatsapp.w4b' }, 'واتساب بيزنس'), h('option', { value: 'com.whatsapp' }, 'واتساب')); sel.value = cfg.waPkg || 'com.whatsapp.w4b'; return sel; })()),
       h('p', { class: 'muted', style: 'font-size:12.5px;margin:8px 0 0' }, 'التأخير الأقل من الحد الأول + الانصراف بدري + نقص الساعات بيتجمعوا على الشهر، وبيتشال منهم الزيادة: لو الباقي تأخير يتخصم بالساعة، ولو زيادة تتصرف. الإجازة الأسبوعية والرسمية مفيش عليهم خصم.'));
     const team = h('div', { class: 'card' }, h('h2', null, 'التارجت الجماعي'),
       row('رقم المبيعات المطلوب', 'لو المبيعات وصلته', num('target', 1000)), row('النسبة %', 'من إجمالي المبيعات وتتقسم بالتساوي', num('teamPct', 0.1)),
@@ -1754,6 +1802,7 @@
     const syncMode = () => { const hm2 = modeIn.value === 'hours'; shWrap.hidden = hm2; hrLbl.textContent = hm2 ? 'عدد الساعات المطلوبة في اليوم' : 'ساعات العمل في اليوم (اختياري)'; hrIn.placeholder = hm2 ? 'مثلًا 2 أو 8' : 'حسب الشيفت (8)'; hrHelp.textContent = hm2 ? `ييجي وقت ما ييجي. أقل من الساعات = نقص (بعد سماح ${S.settings.hoursGrace ?? 10} دقايق)، وأكتر = زيادة. مفيش تأخير ولا انصراف بدري.` : 'الانصراف المطلوب = بداية الشيفت + الساعات دي. سيبها فاضية تبقى حسب الشيفت.'; };
     modeIn.addEventListener('change', syncMode);
     const stIn = h('input', { type: 'date', value: e.start || '' }), enIn = h('input', { type: 'date', value: e.end || '' });
+    const phIn = h('input', { type: 'tel', inputmode: 'tel', dir: 'ltr', value: e.phone || '', placeholder: '01xxxxxxxxx' });
     const msg = h('div');
     const saveBtn = h('button', { class: 'btn primary', style: 'flex:1', onclick: () => {
       const nid = isNew ? idIn.value.trim() : id;
@@ -1761,7 +1810,7 @@
       if (isNew && S.employees[nid]) { msg.replaceChildren(h('div', { class: 'warn-line' }, `الكود ${nid} متسجّل قبل كده باسم ${empName(nid)}`)); return; }
       if (modeIn.value === 'hours' && !(+hrIn.value > 0)) { msg.replaceChildren(h('div', { class: 'warn-line' }, 'اكتب عدد الساعات المطلوبة')); hrIn.focus(); return; }
       if (isNew) delete S.removed[nid];
-      S.employees[nid] = Object.assign(S.employees[nid] || {}, { name: nameIn.value.trim(), off: offIn.value, mode: modeIn.value, shift: modeIn.value === 'hours' ? '' : shIn.value, hours: hrIn.value && +hrIn.value > 0 ? String(+hrIn.value) : '', start: stIn.value, end: enIn.value });
+      S.employees[nid] = Object.assign(S.employees[nid] || {}, { name: nameIn.value.trim(), off: offIn.value, mode: modeIn.value, shift: modeIn.value === 'hours' ? '' : shIn.value, hours: hrIn.value && +hrIn.value > 0 ? String(+hrIn.value) : '', start: stIn.value, end: enIn.value, phone: phIn.value.trim() });
       save(); $('sheet').close(); toast(isNew ? `اتضاف ${empName(nid)}` : 'اتحفظ'); render();
     } }, isNew ? 'إضافة' : 'حفظ');
     const kids = [h('h2', null, isNew ? 'موظف جديد' : empName(id)),
@@ -1770,6 +1819,7 @@
       (shWrap.replaceChildren(f('الشيفت', shIn)), shWrap),
       h('div', { class: 'grid2' }, h('div', { class: 'field' }, hrLbl, hrIn), hrHelp),
       h('div', { class: 'grid2' }, f('بدأ الشغل يوم', stIn), f('ساب الشغل يوم (لو مشي)', enIn)),
+      f('موبايل (واتساب) — للكشوف', phIn),
       h('p', { class: 'muted', style: 'margin:0 0 12px' }, 'الشيفت "تلقائي" يعني التطبيق بيعرفه من وقت البصمة كل يوم. لو موظف مشي اكتب يوم ما ساب — بيفضل في تقارير الشهور القديمة.'),
       msg, h('div', { class: 'btns' }, saveBtn, h('button', { class: 'btn', onclick: () => $('sheet').close() }, 'إلغاء'))];
     if (!isNew) kids.push(h('div', { style: 'margin-top:14px;padding-top:12px;border-top:1px solid var(--line)' },
@@ -2473,6 +2523,7 @@
     if (UI.lastSeen && UI.lastSeen !== t && UI.date === UI.lastSeen) UI.date = t; // يوم جديد
     if (UI.lastSeen && monthOf(UI.lastSeen) !== monthOf(t) && UI.month === monthOf(UI.lastSeen)) UI.month = monthOf(t); // شهر جديد
     UI.lastSeen = t; render(); autoBackup(); autoPull();
+    if (UI.waLast) setTimeout(waReturn, 350);
   });
   UI.lastSeen = todayKey();
   if (!isNative() && 'serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});

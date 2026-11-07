@@ -2,6 +2,7 @@ package com.ahmedmogahed.attendance;
 
 import android.Manifest;
 import android.content.ContentResolver;
+import android.content.ActivityNotFoundException;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.media.MediaScannerConnection;
@@ -91,6 +92,40 @@ public class SaverPlugin extends Plugin {
             call.resolve();
         } catch (Exception e) {
             call.reject("NO_APP");
+        }
+    }
+
+    /** يفتح واتساب (بيزنس أو العادي) على شات الموظف والصورة جاهزة — انت بس تدوس إرسال */
+    @PluginMethod
+    public void whatsapp(PluginCall call) {
+        try {
+            byte[] bytes = Base64.decode(call.getString("data", ""), Base64.DEFAULT);
+            File dir = new File(getContext().getCacheDir(), "wa");
+            if (!dir.exists()) dir.mkdirs();
+            File f = new File(dir, call.getString("name", "slip.png"));
+            try (FileOutputStream os = new FileOutputStream(f)) { os.write(bytes); }
+            Uri uri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".fileprovider", f);
+            String phone = call.getString("phone", ""), text = call.getString("text", ""), pref = call.getString("pkg", "com.whatsapp.w4b");
+            String[] pkgs = "com.whatsapp".equals(pref) ? new String[] { "com.whatsapp", "com.whatsapp.w4b" } : new String[] { "com.whatsapp.w4b", "com.whatsapp" };
+            for (String pkg : pkgs) {
+                Intent i = new Intent(Intent.ACTION_SEND);
+                i.setType(call.getString("mime", "image/png"));
+                i.setPackage(pkg);
+                i.putExtra(Intent.EXTRA_STREAM, uri);
+                if (!text.isEmpty()) i.putExtra(Intent.EXTRA_TEXT, text);
+                if (!phone.isEmpty()) i.putExtra("jid", phone + "@s.whatsapp.net");
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                try {
+                    getActivity().startActivity(i);
+                    JSObject r = new JSObject();
+                    r.put("pkg", pkg);
+                    call.resolve(r);
+                    return;
+                } catch (ActivityNotFoundException ignored) { }
+            }
+            call.reject("NO_WHATSAPP");
+        } catch (Exception e) {
+            call.reject(e.getMessage() == null ? "FAILED" : e.getMessage());
         }
     }
 }
