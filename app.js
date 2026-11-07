@@ -102,6 +102,7 @@
   const monthOf = k => k.slice(0, 7);
   const empName = id => (S.employees[id] && S.employees[id].name) || S.names[id] || ('موظف ' + id);
   const sortedIds = () => Object.keys(S.employees).sort((a, b) => (+a - +b) || a.localeCompare(b));
+  const APP_VER = 'v1.14';
   const isNative = () => !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
   const plugin = n => (window.Capacitor && window.Capacitor.Plugins) ? window.Capacitor.Plugins[n] : null;
   let toastT = 0;
@@ -151,10 +152,43 @@
     const res = E.compute(calcState(), data(), { from, to });
     const now = new Date(), nm = now.getHours() * 60 + now.getMinutes(), cut = (S.settings.dayCutHour ?? 5) * 60, t = todayKey();
     const openDay = nm < cut ? addDays(t, -1) : t;
+    // اليوم اللي لسه مخلصش: اللي ملوش بصمة "لسه مجاش" (أو متأخر) — مش محتاج قرارك لسه
+    if (from <= openDay && to >= openDay) for (const e of res) for (const r of e.rows) {
+      if (r.date !== openDay || r.code !== 'pending') continue;
+      const now = r.date === t ? nm : nm + 1440, emp = S.employees[e.id] || {};
+      const st = emp.mode === 'hours' ? null : dueStart(e.id, r);
+      if (st != null && now > st + (+S.settings.grace || 0)) { r.code = 'latenow'; r.status = 'متأخر · لسه مجاش'; r.lateBy = now - st; }
+      else { r.code = 'notyet'; r.status = 'لسه مجاش'; }
+      r.due = st; if (e.summary && e.summary.pending) e.summary.pending--;
+    }
     if (from <= openDay && to >= openDay) for (const e of res) for (const r of e.rows)
       if (r.date === openDay && r.code === 'missing' && r.missingField === 'out') { r.code = 'working'; r.status = 'لسه في الشغل'; r.nowMin = r.date === t ? nm : nm + 1440; const sh = S.settings.shifts.find(x => x.id === r.shiftId); if (sh) { const raw = r.in - E.hm(sh.start), g = +S.settings.grace || 0; r.late = raw > g ? raw - g : 0; if (r.permLate && r.late) { r.lateExcused = r.late; r.late = 0; } } e.summary.missing--; e.summary.working = (e.summary.working || 0) + 1; }
     return res;
   }
+  /** اليوم اللي لسه شغال (قبل 5 الفجر يبقى امبارح لسه مفتوح) */
+  function openDayKey() { const n = new Date(), t = todayKey(); return n.getHours() * 60 + n.getMinutes() < (S.settings.dayCutHour ?? 5) * 60 ? addDays(t, -1) : t; }
+  /** ميعاد الحضور المتوقع لموظف في يوم (بالدقايق) — من قاعدة اليوم أو شيفته الثابت أو المعتاد */
+  const USC = new Map();
+  function dueStart(id, r) {
+    const all = S.settings.shifts, emp = S.employees[id] || {};
+    const rule = E.ruleFor(S.settings, r.date);
+    let sh = (rule && all.find(x => x.id === rule.shift)) || all.find(x => x.id === r.shiftId) || all.find(x => x.id === emp.shift);
+    if (!sh) {
+      const ck = `${DV}|${r.date}`;
+      if (!USC.has(ck)) { // مرة واحدة لكل الموظفين: الشيفت الأكتر في آخر 30 يوم
+        if (USC.size > 20) USC.clear();
+        const m = {};
+        for (const e of E.compute(calcState(), data(), { from: addDays(r.date, -30), to: addDays(r.date, -1) })) {
+          const cnt = {}; for (const x of e.rows) if (x.shiftId && x.code === 'present') cnt[x.shiftId] = (cnt[x.shiftId] || 0) + 1;
+          m[e.id] = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0] || '';
+        }
+        USC.set(ck, m);
+      }
+      sh = all.find(x => x.id === USC.get(ck)[id]) || all.filter(x => !x.ruleOnly)[0];
+    }
+    return sh ? E.hm(sh.start) : null;
+  }
+  const isWait = r => r && (r.code === 'notyet' || r.code === 'latenow');
   function monthRange(m) {
     const [y, mo] = m.split('-').map(Number), last = `${m}-${pad(new Date(y, mo, 0).getDate())}`, today = todayKey();
     return { from: `${m}-01`, to: last < today ? last : today, end: last, future: `${m}-01` > today };
@@ -207,7 +241,7 @@
     openPresent: new Set(), filter: 'all', gridMode: 'status', gridSel: null, profile: '', pday: '', editor: null, empQ: ''
   };
   document.querySelectorAll('nav.bottom button').forEach(b => b.addEventListener('click', () => { if (b.dataset.tab === 'emps') UI.profile = ''; go(b.dataset.tab); }));
-  $('settings-btn').addEventListener('click', () => go('settings'));
+  $('settings-btn').addEventListener('click', () => { UI.setPage = ''; go('settings'); });
   $('search-btn').addEventListener('click', () => openSearch());
   function go(tab) {
     UI.tab = tab;
@@ -252,14 +286,16 @@
     const date = UI.date, today = todayKey(), future = date > today;
     const rows = computeRange(date, date).filter(e => e.rows.length).map(e => e.rows[0]);
     const need = rows.filter(r => r.code === 'pending' || r.code === 'missing').length;
-    const done = rows.length - (future ? rows.filter(r => r.code === 'pending').length : need);
+    const done = rows.length - (future ? rows.filter(r => r.code === 'pending').length : need + rows.filter(isWait).length);
     const present = rows.filter(r => ['present', 'offwork', 'working'].includes(r.code));
     const byShift = {}; for (const r of present) if (r.shift) byShift[r.shift] = (byShift[r.shift] || 0) + 1;
     const C2 = 2 * Math.PI * 15.5, frac = rows.length ? done / rows.length : 0;
     const ring = h('div', { class: 'ring', html: `<svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15.5" fill="none" style="stroke:var(--ring-track)" stroke-width="3.5"/><circle cx="18" cy="18" r="15.5" fill="none" style="stroke:var(--ring-fill)" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="${(C2 * frac).toFixed(1)} ${C2.toFixed(1)}"/></svg>` },
-      h('b', null, `${done}/${rows.length}`, h('small', null, 'متسجلين')));
+      h('b', null, `${done}/${rows.length}`, h('small', null, rows.some(isWait) ? 'وصلوا' : 'متسجلين')));
     const dateInput = h('input', { type: 'date', value: date, 'aria-label': 'اختار يوم', onchange: ev => { if (ev.target.value) { UI.date = ev.target.value; render(); } } });
+    const notyet = rows.filter(r => r.code === 'notyet').length, lateNow = rows.filter(r => r.code === 'latenow').length;
     const lines = future ? ['يوم جاي — تقدر تسجّل أذونات أو إجازات مقدّمًا']
+      : (notyet || lateNow) ? [[`${present.length} جم`, lateNow ? `${lateNow} متأخر` : null, notyet ? `${notyet} لسه مجوش` : null, need ? `${need} ناقص` : null].filter(Boolean).join(' · '), Object.keys(byShift).length ? Object.entries(byShift).map(([s, n]) => `${s} ${n}`).join(' · ') : null]
       : [`${present.length} حاضر · ${need ? need + ' مستنيين تسجيلك' : 'كله متسجّل ✓'}`, Object.keys(byShift).length ? Object.entries(byShift).map(([s, n]) => `${s} ${n}`).join(' · ') : null];
     const hero = h('div', { class: 'hero' }, ring,
       h('label', { class: 'hero-t' }, h('b', null, longDate(date) + (date === today ? ' — النهارده' : '')), ...lines.filter(Boolean).map(l => h('div', null, l)), dateInput));
@@ -307,13 +343,14 @@
     const all = computeRange(date, date).filter(e => e.rows.length).map(e => ({ e, r: e.rows[0] }));
     if (!all.length) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'مفيش موظفين شغالين اليوم ده'), 'راجع تاريخ بداية وترك الشغل في شاشة الموظفين.')); return; }
     const isNeed = r => r.code === 'pending' || r.code === 'missing';
-    const groups = { all: () => true, present: r => ['present', 'offwork', 'working'].includes(r.code), absent: r => ['absent', 'excused', 'leave', 'off', 'holiday'].includes(r.code), need: isNeed };
+    const groups = { all: () => true, present: r => ['present', 'offwork', 'working'].includes(r.code), absent: r => ['absent', 'excused', 'leave', 'off', 'holiday'].includes(r.code), need: isNeed, wait: isWait };
+    const live = all.some(x => isWait(x.r)); if (UI.filter === 'need' && live && !all.some(x => isNeed(x.r))) UI.filter = 'wait';
     const cnt = f => all.filter(x => groups[f](x.r)).length;
     const mode = S.view.dayMode || 'timeline';
     const vt = (v, l) => h('button', { class: mode === v ? 'on' : '', onclick: () => { S.view.dayMode = v; save(); render(); } }, l);
     const fc = (v, l) => h('button', { class: 'fc' + (UI.filter === v ? ' on' : ''), onclick: () => { UI.filter = v; render(); } }, l, ' ', h('b', null, cnt(v)));
     kids.push(h('div', { class: 'toolbar' }, h('div', { class: 'vt' }, vt('timeline', 'خط زمني'), vt('list', 'قايمة')),
-      h('div', { class: 'fil' }, fc('all', 'الكل'), fc('present', 'حاضر'), fc('absent', 'غياب/إجازة'), future ? null : fc('need', 'مستني'))));
+      h('div', { class: 'fil' }, fc('all', 'الكل'), fc('present', 'حاضر'), fc('absent', 'غياب/إجازة'), future ? null : live ? fc('wait', 'لسه مجوش') : null, future || (live && !cnt('need')) ? null : fc('need', 'مستني'))));
     const pendingOnly = all.filter(x => x.r.code === 'pending');
     if (isLocked(date)) kids.unshift(h('div', { class: 'banner lockb' }, h('span', null, `🔒 ${monthLabel(monthOf(date))} مقفول — مش هينفع تعديل`), h('button', { class: 'btn sm', onclick: () => unlockMonth(monthOf(date)) }, 'فتح')));
     if (!future && !isLocked(date) && pendingOnly.length > 1) {
@@ -354,6 +391,8 @@
       return [r.shift, times, hrs].filter(Boolean).join(' · ');
     }
     if (r.code === 'pending') return r.date < (S.settings.deviceFrom || '') ? 'قبل تشغيل الجهاز — سجّل يدوي' : 'مفيش بصمات من الجهاز';
+    if (r.code === 'notyet') return r.due != null ? `ميعاده ${C(r.due)}` : 'بيشتغل بالساعات';
+    if (r.code === 'latenow') return `ميعاده ${C(r.due)} · بقاله ${D(r.lateBy)} متأخر`;
     return r.status;
   }
   function quickActions(e, r) {
@@ -380,7 +419,7 @@
     const winsOf = (e, r) => { // فترات الشيفت المطلوبة لليوم ده
       if (r.mode === 'hours') return [];
       if (r.periods) return r.periods;
-      const rule = E.ruleFor(S.settings, r.date), s0 = (rule && allSh.find(x => x.id === rule.shift)) || allSh.find(x => x.id === r.shiftId) || (['pending', 'absent', 'excused', 'leave'].includes(r.code) ? allSh.find(x => x.id === usualShift(e.id).id) : null);
+      const rule = E.ruleFor(S.settings, r.date), s0 = (rule && allSh.find(x => x.id === rule.shift)) || allSh.find(x => x.id === r.shiftId) || (['pending', 'absent', 'excused', 'leave', 'notyet', 'latenow'].includes(r.code) ? allSh.find(x => x.id === usualShift(e.id).id) : null);
       if (!s0) return []; const per = s0.periods.map(p => ({ ...p })), hrs = E.hoursOf(S.employees[e.id]);
       if (per.length === 1 && hrs) per[0].en = per[0].st + hrs; return per;
     };
@@ -412,6 +451,8 @@
       else if (r.in != null) parts.push(seg('on fade-l', r.in, Math.min(r.in + 150, t1)));
       else if (r.out != null) parts.push(seg('on fade-r', Math.max(r.out - 150, t0), r.out));
       else if (['absent', 'excused', 'leave', 'off', 'holiday'].includes(r.code)) parts.push(h('em', { class: 'tl-lbl c-' + r.code }, r.status));
+      else if (r.code === 'latenow') { if (w) parts.push(seg('late', w.st, Math.min(w.st + r.lateBy, t1))); parts.push(h('em', { class: 'tl-lbl c-latenow' }, `متأخر ${D(r.lateBy)} · لسه مجاش`)); }
+      else if (r.code === 'notyet') parts.push(h('em', { class: 'tl-lbl c-notyet' }, r.due != null ? `لسه مجاش · ميعاده ${C(r.due)}` : 'لسه مجاش'));
       else if (!future) parts.push(h('em', { class: 'tl-lbl c-pending' }, 'مستني تسجيلك'));
       const minus = (r.late || 0) + (r.early || 0) + (r.short || 0);
       const sub = r.worked != null ? [D(r.worked), r.overtime ? '+' + D(r.overtime) : null, minus ? '−' + D(minus) : null].filter(Boolean).join(' · ') : statusLabel(r, future);
@@ -507,8 +548,8 @@
       for (const k of days) {
         const r = byDate[k], sel = UI.gridSel && UI.gridSel.id === e.id && UI.gridSel.date === k;
         if (!r) { cells.push(h('div', { class: 'gc g-out' })); continue; }
-        const fut = k > today; let cls = 'gc', style = '', label = '';
-        if (fut) cls += r.code === 'pending' ? ' g-fut' : ' c-' + r.code;
+        const fut = k > today || isWait(r); let cls = 'gc', style = '', label = '';
+        if (fut) cls += r.code === 'pending' || isWait(r) ? ' g-fut' : ' c-' + r.code;
         else if (gm === 'status') cls += ' gs-' + r.code;
         else if (gm === 'late') { const v = (r.late || 0) + (r.early || 0) + (r.short || 0); if (r.code === 'off') cls += ' gs-off'; else if (r.code === 'pending' || r.code === 'missing') cls += ' gs-pending'; else if (v) { style = `background:rgba(194,72,95,${Math.min(1, .3 + v / 60 * .7).toFixed(2)})`; label = String(v); } else cls += ' g-zero'; }
         else { if (r.code === 'off') cls += ' gs-off'; else if (r.code === 'pending' || r.code === 'missing') cls += ' gs-pending'; else if (r.worked) { const req = r.required || 480; style = `background:rgba(30,140,110,${Math.min(1, .2 + r.worked / req * .8).toFixed(2)})`; label = String(Math.round(r.worked / 60)); } else cls += ' g-zero'; }
@@ -539,8 +580,9 @@
   /* ======================= تقفيل الشهر (حالة حالة) ======================= */
   function closeItems(m) {
     const r0 = monthRange(m); if (r0.future || S.locked[m]) return [];
-    const out = [];
+    const out = [], od = openDayKey();
     for (const e of computeRange(r0.from, r0.to)) for (const r of e.rows) {
+      if (r.date >= od) continue; // اليوم لسه مخلصش — القرارات بعد ما يخلص
       const k = e.id + '|' + r.date;
       if (r.code === 'pending') out.push({ e, r, kind: 'pending' });
       else if (r.code === 'missing') out.push({ e, r, kind: 'missing' });
@@ -854,10 +896,10 @@
     const cal = [...['سبت', 'حد', 'اتنين', 'تلات', 'أربع', 'خميس', 'جمعة'].map(d => h('div', { class: 'cal-h' }, d))];
     for (let i = 0; i < lead; i++) cal.push(h('div'));
     for (let d = 1; d <= n; d++) {
-      const k = `${m}-${pad(d)}`, r = byDate[k], fut = k > today;
+      const k = `${m}-${pad(d)}`, r = byDate[k], fut = k > today || isWait(r);
       if (!r) { cal.push(h('div', { class: 'cal-d g-out' }, d)); continue; }
       const small = fut ? '' : r.worked != null ? D(r.worked) : r.code === 'excused' ? 'بإذن' : r.code === 'leave' ? 'إجازة' : r.code === 'absent' ? 'غياب' : r.code === 'off' ? '' : r.code === 'pending' ? '؟' : r.code === 'missing' ? 'ناقص' : '';
-      cal.push(h('button', { class: 'cal-d ' + (fut ? (r.code === 'pending' ? 'g-fut' : 'gs-' + r.code) : 'gs-' + r.code) + (UI.pday === k ? ' sel' : '') + (k === today ? ' today' : ''), onclick: () => { UI.pday = UI.pday === k ? '' : k; render(); } }, d, h('small', null, small)));
+      cal.push(h('button', { class: 'cal-d ' + (fut ? (r.code === 'pending' || isWait(r) ? 'g-fut' : 'gs-' + r.code) : 'gs-' + r.code) + (UI.pday === k ? ' sel' : '') + (k === today ? ' today' : ''), onclick: () => { UI.pday = UI.pday === k ? '' : k; render(); } }, d, h('small', null, small)));
     }
     kids.push(h('div', { class: 'cal' }, cal));
     const lg = (cls, l) => h('span', null, h('i', { class: cls }), l);
@@ -1141,31 +1183,69 @@
   }
 
   /* ======================= الموظفين ======================= */
+  const EMP_COLORS = ['#1E8C6E', '#6A5FC1', '#C2485F', '#A68510', '#2F7FB8', '#B05FB0', '#5B8C2A', '#D9773A', '#3E7C8C', '#8C5A3E'];
+  const empColor = id => EMP_COLORS[[...String(id)].reduce((a, c) => a + c.charCodeAt(0), 0) % EMP_COLORS.length];
+  /** حالة الموظف النهارده للكارت: [النص، الكلاس، لون النقطة، ترتيب] */
+  function liveState(r) {
+    if (!r) return ['—', 'st-wait', '#9A96B8', 9];
+    switch (r.code) {
+      case 'latenow': return [`⚠ متأخر ${D(r.lateBy)} · لسه مجاش`, 'st-late', '#D99A00', 0];
+      case 'working': return [`● جوه من ${C(r.in)}`, 'st-in', '#2F9E5F', 1];
+      case 'notyet': return [r.due != null ? `⏳ ميعاده ${C(r.due)}` : '⏳ لسه مجاش', 'st-wait', '#9A96B8', 2];
+      case 'present': case 'offwork': return [`✓ خلص · ${D(r.worked || 0)}`, 'st-done', '#1E8C6E', 3];
+      case 'pending': case 'missing': return ['محتاج تسجيل', 'st-late', '#D99A00', 0];
+      case 'absent': return ['غياب', 'st-bad', '#C2485F', 4];
+      default: return [r.status, 'st-off', '#6A5FC1', 5];
+    }
+  }
   function renderEmps() {
     if (UI.profile) return renderProfile(UI.profile);
     $('subtitle').textContent = '';
-    const today = todayKey(), ids = sortedIds();
-    const dayRes = Object.fromEntries(computeRange(today, today).filter(e => e.rows.length).map(e => [e.id, e.rows[0]]));
+    const today = todayKey(), od = openDayKey(), ids = sortedIds(), m = monthOf(od), mr = monthRange(m);
+    const dayRes = Object.fromEntries(computeRange(od, od).filter(e => e.rows.length).map(e => [e.id, e.rows[0]]));
+    const monthRes = Object.fromEntries(computeRange(mr.from, mr.to).map(e => [e.id, e.summary]));
     const q = h('input', { type: 'search', placeholder: '🔍 ابحث بالاسم أو الكود', dir: 'auto', value: UI.empQ || '' });
     const listBox = h('div');
+    const F = { all: () => true, in: r => r && ['working', 'present', 'offwork'].includes(r.code), late: r => r && ['latenow', 'pending', 'missing'].includes(r.code), wait: r => r && r.code === 'notyet', away: r => r && ['off', 'holiday', 'leave', 'excused', 'absent'].includes(r.code) };
     const draw = () => {
-      UI.empQ = q.value;
-      const hits = ids.filter(id => matchEmp(id, q.value));
-      const active = hits.filter(id => !(S.employees[id].end && S.employees[id].end < today)), gone = hits.filter(id => !active.includes(id));
-      const item = id => {
-        const e = S.employees[id], sh = S.settings.shifts.find(s => s.id === e.shift), r = dayRes[id];
-        const off = e.off === '' || e.off == null ? 'يوم الإجازة مش متحدد ⚠' : 'إجازته ' + E.DAY_NAMES[+e.off];
-        return h('button', { class: 'li' + (gone.includes(id) ? ' gone' : ''), onclick: () => openProfile(id) },
-          avatar(empName(id)),
-          h('span', { class: 'grow' }, h('div', { class: 't', dir: 'auto' }, hl(empName(id), q.value)),
-            h('div', { class: 's' }, [hl('كود ' + id, q.value), ' · ', [off, sh ? 'شيفت ' + sh.name : null, E.hoursOf(e) ? `${+e.hours} ساعات` : null, e.end ? `ساب ${fmtDate(e.end)}` : null].filter(Boolean).join(' · ')])),
-          r ? h('span', { class: 'pill c-' + r.code }, statusLabel(r, false)) : h('span', { html: ICON.chev, style: 'display:inline-flex' }));
+      UI.empQ = q.value; const f = UI.empF || 'all', sort = UI.empSort || 'status';
+      const isGone = id => !!(S.employees[id].end && S.employees[id].end < today);
+      const hits = ids.filter(id => matchEmp(id, q.value)), act = hits.filter(id => !isGone(id)), gone = hits.filter(isGone);
+      const cnt = k => act.filter(id => F[k](dayRes[id])).length;
+      const chip = (k, l, dot) => cnt(k) || k === 'all' ? h('button', { class: 'mk-chip' + (f === k ? ' on' : ''), onclick: () => { UI.empF = k; draw(); } }, dot ? h('i', { style: 'background:' + dot }) : null, l, h('b', null, cnt(k))) : null;
+      const sum = id => monthRes[id] || {};
+      const order = { status: (a, b) => liveState(dayRes[a])[3] - liveState(dayRes[b])[3], name: (a, b) => empName(a).localeCompare(empName(b)), late: (a, b) => (sum(b).late || 0) - (sum(a).late || 0), hours: (a, b) => (sum(b).worked || 0) - (sum(a).worked || 0) };
+      const shown = act.filter(id => F[f] ? F[f](dayRes[id]) : true).sort((a, b) => order[sort](a, b) || a.localeCompare(b, undefined, { numeric: true }));
+      const card = id => {
+        const e = S.employees[id], r = dayRes[id], st = liveState(r), sm = sum(id), sh = S.settings.shifts.find(x => x.id === e.shift);
+        const sub = [id, E.hoursOf(e) && e.mode === 'hours' ? `${+e.hours} ساعات` : sh ? sh.name : null].filter(Boolean).join(' · ');
+        const req = sm.required || 0, pct = req ? Math.min(100, Math.round((sm.worked || 0) / req * 100)) : 0;
+        const tags = [];
+        if (sm.lateDays) tags.push(h('span', { class: 'a' }, `⏰ ${sm.lateDays} تأخير`));
+        if (sm.absent) tags.push(h('span', { class: 'r' }, `✗ ${sm.absent} غياب`));
+        if (sm.overtime) tags.push(h('span', { class: 'g' }, `+ ${D(sm.overtime)} زيادة`));
+        if (e.off === '' || e.off == null) tags.push(h('span', { class: 'a' }, '⚠ يوم الإجازة'));
+        return h('button', { class: 'ec' + (isGone(id) ? ' gone' : ''), onclick: () => openProfile(id) },
+          h('div', { class: 'ec-top' }, h('span', { class: 'ec-av', style: 'background:' + empColor(id) }, initial(empName(id)), isGone(id) ? null : h('i', { style: 'background:' + st[2] })),
+            h('span', { class: 'ec-nm' }, h('b', { dir: 'auto' }, hl(empName(id), q.value)), h('small', null, hl(sub, q.value)))),
+          isGone(id) ? h('div', { class: 'ec-st st-off' }, `ساب ${fmtDate(e.end)}`) : h('div', { class: 'ec-st ' + st[1] }, st[0]),
+          req ? h('div', null, h('div', { class: 'ec-meta' }, h('span', null, MONTHS[+m.slice(5) - 1]), h('span', null, `${D(sm.worked || 0)} من ${D(req)}`)), h('div', { class: 'ec-bar' }, h('i', { style: `width:${pct}%` }))) : null,
+          h('div', { class: 'ec-tags' }, tags.length ? tags : h('span', null, '✓ مفيش ملاحظات')));
       };
+      const sortSel = h('select', { class: 'ec-sort', 'aria-label': 'ترتيب', onchange: ev => { UI.empSort = ev.target.value; draw(); } },
+        [['status', 'حسب الحالة'], ['name', 'بالاسم'], ['late', 'الأكتر تأخير'], ['hours', 'الأكتر ساعات']].map(([v, l]) => h('option', { value: v }, 'ترتيب: ' + l))); sortSel.value = sort;
       const kids = [];
-      if (!ids.length) kids.push(h('div', { class: 'card empty' }, h('b', null, 'لسه مفيش موظفين'), 'بيتضافوا لوحدهم لما ترفع ملف الجهاز، أو ضيفهم من الزرار اللي فوق.'));
+      if (!ids.length) kids.push(h('div', { class: 'card empty' }, h('b', null, 'لسه مفيش موظفين'), 'بيتضافوا لوحدهم لما تسحب من الجهاز أو ترفع ملف، أو ضيفهم من زرار "جديد".'));
       else if (!hits.length) kids.push(h('div', { class: 'card empty' }, 'مفيش موظف بالاسم أو الكود ده'));
-      if (active.length) kids.push(h('div', { class: 'sec-title' }, `شغالين (${active.length})`), h('div', { class: 'list' }, active.map(item)));
-      if (gone.length) kids.push(h('div', { class: 'sec-title' }, 'سابوا الشغل (موجودين في تقارير الشهور القديمة)'), h('div', { class: 'list' }, gone.map(item)));
+      else {
+        kids.push(h('div', { class: 'mk-chips' }, chip('all', 'الكل'), chip('in', 'جوه/جم', '#2F9E5F'), chip('late', 'متأخر', '#D99A00'), chip('wait', 'لسه مجوش', '#9A96B8'), chip('away', 'إجازة/غياب', '#6A5FC1')));
+        kids.push(h('div', { class: 'ec-bar-row' }, h('span', null, `${act.length} شغالين`), sortSel));
+        kids.push(shown.length ? h('div', { class: 'ec-grid' }, shown.map(card)) : h('div', { class: 'card empty' }, 'مفيش حد في الفلتر ده'));
+        if (gone.length) {
+          kids.push(h('button', { class: 'ec-gone-t', onclick: () => { UI.empGone = !UI.empGone; draw(); } }, `سابوا الشغل (${gone.length}) ${UI.empGone || q.value ? '▾' : '‹'}`));
+          if (UI.empGone || q.value) kids.push(h('div', { class: 'ec-grid' }, gone.map(card)));
+        }
+      }
       listBox.replaceChildren(...kids);
     };
     q.addEventListener('input', draw); draw();
@@ -1225,7 +1305,7 @@
 
     const dataCard = h('div', { class: 'card' }, h('h2', null, 'ملفات الجهاز'),
       row('بداية الحساب', 'أول يوم التطبيق بيحسب منه — مفيش أي شهر قبله بيظهر', h('input', { type: 'date', value: st.startFrom || '', max: todayKey(), onchange: ev => { if (!ev.target.value) return; const old = st.startFrom; st.startFrom = ev.target.value; clampToStart(old); save(); render(); toast('اتحفظ'); } })),
-      row('الاعتماد على الجهاز من يوم', 'بصمات الجهاز قبل اليوم ده بتتجاهل (فترة التجربة) وتسجّلها يدوي', h('input', { type: 'date', value: st.deviceFrom || '', onchange: ev => { st.deviceFrom = ev.target.value; if (st.deviceFrom && st.deviceFrom < (st.startFrom || '9')) { const old = st.startFrom; st.startFrom = st.deviceFrom.slice(0, 7) + '-01'; clampToStart(old); } save(); render(); toast('اتحفظ'); } })),
+      h('details', { class: 'adv' }, h('summary', null, 'متقدم'), row('الاعتماد على الجهاز من يوم', 'بصمات الجهاز قبل اليوم ده بتتجاهل (فترة التجربة) وتسجّلها يدوي', h('input', { type: 'date', value: st.deviceFrom || '', onchange: ev => { st.deviceFrom = ev.target.value; if (st.deviceFrom && st.deviceFrom < (st.startFrom || '9')) { const old = st.startFrom; st.startFrom = st.deviceFrom.slice(0, 7) + '-01'; clampToStart(old); } save(); render(); toast('اتحفظ'); } }))),
       h('div', { class: 'btns', style: 'margin-top:8px' }, h('button', { class: 'btn primary', onclick: () => $('file').click() }, 'رفع ملف الجهاز')),
       S.imports.length ? h('ul', { class: 'file-list' }, S.imports.slice(0, 5).map(i => h('li', null, `${fmtDate(i.at)} — ${i.name} — ${i.count} بصمة جديدة`))) : h('p', { class: 'muted' }, 'لسه مرفعتش ملفات. كل ملف بترفعه بيتجمع مع اللي قبله.'));
 
@@ -1265,9 +1345,10 @@
 
     const rulesCard = h('div', { class: 'card' }, h('h2', null, 'قواعد الحساب'),
       row('فترة السماح في التأخير', 'بالدقايق — جه 10:20 والسماح 15 = 5 دقايق تأخير', numIn('grace', 0, 120)),
-      row('البصمة المكررة', 'بصمتين من نفس النوع في أقل من كام دقيقة = بصمة واحدة', numIn('dedupeMinutes', 0, 60)),
-      row('آخر اليوم', 'البصمة قبل الساعة دي الفجر تتبع اليوم اللي قبله', numIn('dayCutHour', 0, 12)),
       row('سماح نقص الساعات', 'لموظفين "ساعات بس" — اشتغل 1:50 من 2 والسماح 10 = مفيش نقص', numIn('hoursGrace', 0, 120)),
+      h('details', { class: 'adv' }, h('summary', null, 'متقدم'),
+        row('البصمة المكررة', 'بصمتين من نفس النوع في أقل من كام دقيقة = بصمة واحدة', numIn('dedupeMinutes', 0, 60)),
+        row('آخر اليوم', 'البصمة قبل الساعة دي الفجر تتبع اليوم اللي قبله', numIn('dayCutHour', 0, 12))),
       h('p', { class: 'muted', style: 'margin:8px 0 0' }, 'الانصراف بدري بيتحسب من أول دقيقة. الزيادة = الوقت بعد نهاية الشيفت. الشغل يوم الإجازة الأسبوعية كله زيادة.'));
 
     const freqSel = h('select', { onchange: ev => { b.freq = ev.target.value; save(); render(); } }, h('option', { value: 'off' }, 'مقفول'), h('option', { value: 'daily' }, 'كل يوم'), h('option', { value: 'weekly' }, 'كل أسبوع')); freqSel.value = b.freq;
@@ -1340,7 +1421,30 @@
     const lockAppCard = h('div', { class: 'card' }, h('h2', null, '🔐 قفل التطبيق'),
       row(lc && lc.on ? 'القفل شغال' : 'القفل مقفول', lc && lc.on ? (lc.bio ? 'بالرقم السري والبصمة — بيقفل لما تسيب التطبيق أكتر من دقيقة' : 'بالرقم السري — بيقفل لما تسيب التطبيق أكتر من دقيقة') : 'محدش يفتح بيانات الموظفين من غير رقمك أو بصمتك',
         h('button', { class: 'btn sm' + (lc && lc.on ? '' : ' primary'), onclick: lockSetupSheet }, lc && lc.on ? 'تعديل' : 'شغّله')));
-    $('tab-settings').replaceChildren(styleCard, lockAppCard, deviceCard(), dataCard, shiftCard, daysCard, holCard, rulesCard, lockCard, remindCard, backupCard, dangerCard);
+    // الإعدادات مقسومة 5 أقسام — كل قسم صفحة لوحده
+    const STYLE_NAME = Object.fromEntries(STY.map(x => [x.v, x.l])), lp = S.device && S.device.lastPull, rmd = S.remind;
+    const upHol = (st.holidays || []).filter(x => x.on !== false && (x.to || x.from) >= todayKey()).length;
+    const SECS = [
+      { id: 'device', ic: '📡', bg: 'var(--teal-soft)', t: 'الجهاز والبيانات', cards: () => [deviceCard(), dataCard],
+        s: [lp ? `آخر سحب ${lp.at.slice(0, 10) === todayKey() ? 'النهارده ' + fmt12(E.hm(lp.at.slice(11))) : fmtDate(lp.at.slice(0, 10))}` : isNative() ? 'لسه مسحبتش من الجهاز' : `${S.imports.length} ملف اترفع`, `بداية الحساب ${monthLabel(startMonth())}`] },
+      { id: 'shifts', ic: '⏰', bg: 'var(--violet-soft)', t: 'الشيفتات والمواعيد', cards: () => [shiftCard, daysCard, rulesCard],
+        s: [...st.shifts.filter(x => !x.ruleOnly).map(x => `${x.name} ${x.start}–${x.end}`), (st.rules || []).filter(r => r.on).length ? `${(st.rules || []).filter(r => r.on).length} يوم خاص` : null, `سماح ${st.grace} د`] },
+      { id: 'months', ic: '🗓', bg: 'var(--rose-soft)', t: 'الشهور والإجازات الرسمية', cards: () => [lockCard, holCard],
+        s: [lastM < sm ? 'لسه مفيش شهر خلص' : S.locked[lastM] ? `${monthLabel(lastM)} مقفول` : `${monthLabel(lastM)} مفتوح`, upHol ? `${upHol} إجازة جاية` : 'مفيش إجازات رسمية جاية'] },
+      { id: 'security', ic: '🛡', bg: 'var(--green-soft)', t: 'الأمان والنسخ الاحتياطي', cards: () => [lockAppCard, backupCard, dangerCard],
+        s: [lc && lc.on ? 'القفل شغال' : 'القفل مقفول', b.freq === 'off' ? 'النسخ التلقائي مقفول' : b.last ? `آخر نسخة ${fmtDate(b.last.slice(0, 10))}` : 'النسخ التلقائي شغال'] },
+      { id: 'look', ic: '🎨', bg: 'var(--amber-soft)', t: 'الشكل والتذكير', cards: () => [styleCard, remindCard],
+        s: [STYLE_NAME[st.style || 'vivid'] || '', rmd && rmd.on ? `التذكير ${fmt12(E.hm(rmd.time || '00:00'))}` : 'التذكير مقفول'] }];
+    const sec = SECS.find(x => x.id === UI.setPage);
+    if (sec) {
+      $('subtitle').textContent = sec.t;
+      $('tab-settings').replaceChildren(h('button', { class: 'set-back', onclick: () => { UI.setPage = ''; render(); window.scrollTo(0, 0); } }, h('span', { html: ICON.next, style: 'display:inline-flex' }), 'كل الإعدادات'),
+        h('h2', { class: 'set-title' }, sec.ic + ' ' + sec.t), ...sec.cards());
+    } else {
+      $('tab-settings').replaceChildren(h('div', { class: 'set-home' }, SECS.map(x => h('button', { class: 'set-sec', onclick: () => { UI.setPage = x.id; render(); window.scrollTo(0, 0); } },
+        h('span', { class: 'ic', style: 'background:' + x.bg }, x.ic), h('span', { class: 'grow' }, h('b', null, x.t), h('small', null, x.s.filter(Boolean).join(' · '))), h('span', { html: ICON.chev, class: 'chv' })))),
+        h('p', { class: 'muted', style: 'text-align:center;font-size:12px;margin-top:14px' }, 'الحضور والانصراف · ' + APP_VER));
+    }
     if (isNative()) { listAutoBackups(); remindStatus(); }
   }
 
@@ -1726,7 +1830,19 @@
     }
     for (const f of files) await saveFile(f.name, f.mime, f.base64);
   }
-  async function exportStatement(list, rng, label, kind) {
+  /** حفظ على الموبايل: الصور في الاستديو (ألبوم "الحضور والانصراف") والـ PDF في التنزيلات */
+  const safeName = t => String(t).replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
+  async function saveFiles(files) { // files: [{name, mime, base64, nice}]
+    const Sv = isNative() ? plugin('Saver') : null;
+    if (!Sv) { for (const f of files) await saveFile(f.name, f.mime, f.base64); return; }
+    let last = null;
+    for (const f of files) last = await Sv.save({ data: f.base64, name: f.nice || f.name, mime: f.mime, album: 'الحضور والانصراف' });
+    const img = files[0].mime.startsWith('image/'), t = $('toast');
+    t.replaceChildren(h('span', null, `✓ ${files.length > 1 ? `اتحفظ ${files.length} ملفات` : 'اتحفظ'} في ${img ? 'الاستديو' : 'التنزيلات'}`),
+      last && last.uri && files.length === 1 ? h('button', { class: 'undo-btn', onclick: () => { Sv.open({ uri: last.uri, mime: files[0].mime }).catch(() => toast('مفيش برنامج يفتح الملف')); t.classList.remove('show', 'has-undo'); } }, 'افتح') : null);
+    t.classList.add('show', 'has-undo'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show', 'has-undo'), 5000);
+  }
+  async function exportStatement(list, rng, label, kind, dest) {
     toast('بجهّز الكشف…');
     try {
       const all = [];
@@ -1734,25 +1850,28 @@
       const tag = `${rng.tag || rng.from}${list.length === 1 ? '_emp' + list[0].id : '_all'}`;
       if (kind === 'image') {
         const files = [];
-        for (const { e, pages } of all) pages.forEach((c, i) => files.push({ name: `statement_${tag}_${e.id}${pages.length > 1 ? '_p' + (i + 1) : ''}.png`, mime: 'image/png', base64: c.toDataURL('image/png').split(',')[1] }));
-        await shareFiles(files);
+        for (const { e, pages } of all) pages.forEach((c, i) => files.push({ name: `statement_${tag}_${e.id}${pages.length > 1 ? '_p' + (i + 1) : ''}.png`, nice: safeName(`كشف ${e.name} - ${label}${pages.length > 1 ? ` (${i + 1})` : ''}`) + '.png', mime: 'image/png', base64: c.toDataURL('image/png').split(',')[1] }));
+        await (dest === 'save' ? saveFiles(files) : shareFiles(files));
       } else {
         await needLib('vendor/jspdf.umd.min.js', 'jspdf');
         const doc = new window.jspdf.jsPDF({ unit: 'pt', format: 'a4', compress: true });
         let first = true;
         for (const { pages } of all) for (const c of pages) { if (!first) doc.addPage(); first = false; doc.addImage(c.toDataURL('image/jpeg', 0.9), 'JPEG', 0, 0, 595.28, 841.89); }
-        await shareFiles([{ name: `statement_${tag}.pdf`, mime: 'application/pdf', base64: doc.output('datauristring').split(',')[1] }]);
+        const pf = [{ name: `statement_${tag}.pdf`, nice: safeName(list.length === 1 ? `كشف ${list[0].name} - ${label}` : `كشوف الحضور - ${label}`) + '.pdf', mime: 'application/pdf', base64: doc.output('datauristring').split(',')[1] }];
+        await (dest === 'save' ? saveFiles(pf) : shareFiles(pf));
       }
     } catch (err) { console.error(err); toast('مقدرتش أعمل الكشف: ' + (err.message || err)); }
   }
   function statementSheet(list, rng, label) {
-    const one = list.length === 1;
+    const one = list.length === 1, go2 = (kind, dest) => { $('sheet').close(); exportStatement(list, rng, label, kind, dest); };
+    const pair = (ic, title, sub, kind, saveL) => h('div', { class: 'st-opt' }, h('div', { class: 'so-h' }, h('span', { class: 'avatar' }, ic), h('span', { class: 'grow' }, h('div', { class: 'so-t' }, title), h('div', { class: 'so-s' }, sub))),
+      h('div', { class: 'btns' }, h('button', { class: 'btn primary', style: 'flex:1', onclick: () => go2(kind, 'save') }, '📥 ' + saveL), h('button', { class: 'btn', style: 'flex:1', onclick: () => go2(kind, 'share') }, '📤 مشاركة')));
     openSheet([h('div', { class: 'grab' }), h('h2', null, one ? `كشف ${list[0].name}` : `كشوف ${list.length} موظفين`), h('p', { class: 'muted', style: 'margin:-6px 0 12px' }, label),
-      h('div', { class: 'list' },
-        h('button', { class: 'li', onclick: () => { $('sheet').close(); exportStatement(list, rng, label, 'image'); } }, h('span', { class: 'avatar' }, '📷'), h('span', { class: 'grow' }, h('div', { class: 't' }, 'صورة'), h('div', { class: 's' }, 'تبعتها واتساب على طول'))),
-        h('button', { class: 'li', onclick: () => { $('sheet').close(); exportStatement(list, rng, label, 'pdf'); } }, h('span', { class: 'avatar' }, '📄'), h('span', { class: 'grow' }, h('div', { class: 't' }, 'PDF'), h('div', { class: 's' }, one ? 'للطباعة أو الإرسال' : 'كل موظف في صفحة — ملف واحد'))),
-        h('button', { class: 'li', onclick: () => { $('sheet').close(); exportExcel(one ? [computeRange(rng.from, rng.to).find(x => x.id === list[0].id)] : list, rng, { type: 'detail', single: one }); } }, h('span', { class: 'avatar' }, '📊'), h('span', { class: 'grow' }, h('div', { class: 't' }, 'Excel'), h('div', { class: 's' }, 'جدول مفصّل يتعدّل'))))]);
+      pair('📷', 'صورة', one ? 'تتحفظ في ألبوم "الحضور والانصراف"' : 'كل موظف في صورة لوحده', 'image', 'حفظ في الاستديو'),
+      pair('📄', 'PDF', one ? 'للطباعة أو الأرشيف' : 'كل موظف في صفحة — ملف واحد', 'pdf', 'حفظ في التنزيلات'),
+      h('div', { class: 'list', style: 'margin-top:10px' }, h('button', { class: 'li', onclick: () => { $('sheet').close(); exportExcel(one ? [computeRange(rng.from, rng.to).find(x => x.id === list[0].id)] : list, rng, { type: 'detail', single: one }); } }, h('span', { class: 'avatar' }, '📊'), h('span', { class: 'grow' }, h('div', { class: 't' }, 'Excel'), h('div', { class: 's' }, 'جدول مفصّل يتعدّل'))))]);
   }
+
 
   /* ======================= قفل التطبيق ======================= */
   const LOCK_KEY = 'attendance_lock_v1';
@@ -1850,7 +1969,7 @@
       try { L.addListener('localNotificationActionPerformed', ev => { if (ev && ev.notification && ev.notification.id === REMIND_ID) { go('day'); setTimeout(() => quickSheet(null), 300); } }); } catch (e) { /* ignore */ }
       scheduleReminder(true);
     }
-    if (A) try { A.addListener('backButton', () => { if (UI.searchOpen) UI.searchOpen.close(); else if ($('sheet').open) $('sheet').close(); else if (UI.tab === 'emps' && UI.profile) { UI.profile = ''; render(); } else if (UI.tab !== 'day') go('day'); else A.minimizeApp(); }); } catch (e) { /* ignore */ }
+    if (A) try { A.addListener('backButton', () => { if (UI.searchOpen) UI.searchOpen.close(); else if ($('sheet').open) $('sheet').close(); else if (UI.tab === 'settings' && UI.setPage) { UI.setPage = ''; render(); } else if (UI.tab === 'emps' && UI.profile) { UI.profile = ''; render(); } else if (UI.tab !== 'day') go('day'); else A.minimizeApp(); }); } catch (e) { /* ignore */ }
   })();
   let hiddenAt = 0;
   document.addEventListener('visibilitychange', () => {
