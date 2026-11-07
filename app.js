@@ -103,7 +103,7 @@
   const monthOf = k => k.slice(0, 7);
   const empName = id => (S.employees[id] && S.employees[id].name) || S.names[id] || ('موظف ' + id);
   const sortedIds = () => Object.keys(S.employees).sort((a, b) => (+a - +b) || a.localeCompare(b));
-  const APP_VER = 'v1.15';
+  const APP_VER = 'v1.16';
   const isNative = () => !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
   const plugin = n => (window.Capacitor && window.Capacitor.Plugins) ? window.Capacitor.Plugins[n] : null;
   let toastT = 0;
@@ -637,7 +637,7 @@
     UI.editor = null;
     const next = () => { done.add(i); i++; draw(); };
     const draw = () => {
-      $('sheet').classList.add('full');
+      UI.sheetGuard = null; $('sheet').classList.remove('pnl'); $('sheet').classList.add('full');
       if (i >= items.length) {
         const left = closeItems(m).length;
         $('sheet-in').replaceChildren(h('div', { class: 'cf-done' }, h('div', { class: 'cf-check' }, left ? '…' : '✓'), h('b', null, left ? `فاضل ${left} حاجة اتخطيتها` : `${monthLabel(m)} اتقفل ✓`),
@@ -730,11 +730,23 @@
     const root = $('tab-month'), rng = reportRange();
     $('subtitle').textContent = '';
     const v = S.view;
-    if (!['summary', 'detail', 'charts', 'log', 'pay'].includes(v.type)) v.type = 'summary';
+    // الحضور | المرتبات — كل واحد شاشة لوحده
+    if (v.type === 'pay') { v.type = 'summary'; v.area = 'pay'; }
+    const area = v.area === 'pay' ? 'pay' : 'att';
+    const sw = h('div', { class: 'rs-mode' }, h('button', { class: area === 'att' ? 'on' : '', onclick: () => { v.area = 'att'; save(); render(); } }, '📊 الحضور'), h('button', { class: area === 'pay' ? 'on' : '', onclick: () => { v.area = 'pay'; save(); render(); } }, '💰 المرتبات'));
+    if (area === 'pay') {
+      const cur = monthOf(todayKey()); let pm = UI.paymonth || curPayMonth(); if (pm > cur) pm = cur; if (pm < startMonth()) pm = startMonth(); UI.paymonth = pm;
+      const shiftP = d => { UI.paymonth = d < 0 ? prevMonth(pm) : nextMonth(pm); render(); };
+      const md = S.pay && S.pay.months && S.pay.months[pm] || {};
+      const nb = navBar(monthLabel(pm), md.paid ? '💸 اتصرف' : pm === curPayMonth() ? 'عليه الدور' : pm === cur ? 'الشهر ده (لسه شغال)' : 'متصرفش', 'month', pm, x => { UI.paymonth = x; render(); }, () => shiftP(-1), () => shiftP(1));
+      const nx = nb.querySelectorAll('.arrow')[1]; if (nx && pm >= cur) nx.disabled = true;
+      root.replaceChildren(sw, nb, ...payView(pm)); return;
+    }
+    if (!['summary', 'detail', 'charts', 'log'].includes(v.type)) v.type = 'summary';
     const all = rng.future ? [] : computeRange(rng.from, rng.to);
     if (v.emp && !all.some(e => e.id === v.emp)) v.emp = '';
     const dd = (small, val, fn) => h('button', { class: 'dd', onclick: fn }, h('span', null, h('small', null, small), val), h('span', { html: ICON.chev, style: 'display:inline-flex;transform:rotate(-90deg)' }));
-    const kids = [h('div', { class: 'fb' }, dd('الفترة', rng.label, periodSheet), dd('الموظف', v.emp ? empName(v.emp) : 'كل الموظفين', () => empPicker(all.map(e => e.id), v.emp, id => { v.emp = id; save(); render(); })))];
+    const kids = [sw, h('div', { class: 'fb' }, dd('الفترة', rng.label, periodSheet), dd('الموظف', v.emp ? empName(v.emp) : 'كل الموظفين', () => empPicker(all.map(e => e.id), v.emp, id => { v.emp = id; save(); render(); })))];
     if (rng.future) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'الفترة دي لسه مجتش'))); return; }
     if (!all.length) { root.replaceChildren(...kids, h('div', { class: 'card empty' }, h('b', null, 'مفيش بيانات للفترة دي'))); return; }
     const list = v.emp ? all.filter(e => e.id === v.emp) : all;
@@ -756,10 +768,9 @@
       h('div', { class: 'total' }, h('b', { style: 'color:var(--green)' }, D(tot('overtime'))), h('span', null, 'زيادة'))));
     const tab = (t, l) => h('button', { class: v.type === t ? 'on' : '', onclick: () => { v.type = t; save(); render(); } }, l);
     const canX = v.type === 'summary' || v.type === 'detail';
-    kids.push(h('div', { class: 'tabs' }, tab('summary', 'ملخص'), tab('detail', 'تفاصيل'), tab('charts', 'رسوم'), tab('log', 'أذونات'), tab('pay', '💰 مرتبات'),
+    kids.push(h('div', { class: 'tabs' }, tab('summary', 'ملخص'), tab('detail', 'تفاصيل'), tab('charts', 'رسوم'), tab('log', 'أذونات'),
       canX ? h('button', { class: 'xl', 'aria-label': 'تحميل Excel', html: ICON.xls + '<span>Excel</span>', onclick: () => exportExcel(list, rng) }) : null,
-      v.type === 'pay' ? null : h('button', { class: 'xl', 'aria-label': 'كشوف PDF', html: '<span>📄 كشف</span>', onclick: () => statementSheet(list, rng, rng.label) })));
-    if (v.type === 'pay') { kids.push(...(UI.rmode === 'month' ? payView(UI.month) : [h('div', { class: 'card empty' }, h('b', null, 'المرتبات بتتحسب بالشهر'), 'اختار شهر من "الفترة" فوق.')])); root.replaceChildren(...kids); return; }
+      h('button', { class: 'xl', 'aria-label': 'كشوف PDF', html: '<span>📄 كشف</span>', onclick: () => statementSheet(list, rng, rng.label) })));
     if (v.type === 'log') kids.push(...logView(list));
     else if (v.type === 'charts') kids.push(...(v.emp ? empCharts(list[0], rng) : teamCharts(list, rng)));
     else if (v.type === 'summary') kids.push(insightsView(list, rng), summaryTable(list));
@@ -1219,8 +1230,9 @@
       prods.length ? `أصناف: ${Object.keys(md.qty).filter(id => Object.values(md.qty[id] || {}).some(v => +v)).length} موظف` : null].filter(Boolean);
     if (nums.length) out.push(h('button', { class: 'pay-nums', disabled: paid, onclick: () => numbersSheet(m) }, h('span', { class: 'grow' }, h('b', null, '📝 أرقام الشهر'), h('small', null, nums.join(' · '))), paid ? null : h('span', { class: 'btn sm' }, 'تعديل')));
     out.push(h('div', { class: 'pay-sum' }, h('small', null, `صافي مرتبات ${monthLabel(m)} · ${ids.length} موظف`), h('div', { class: 'big' }, fmtN(slips.reduce((a, s) => a + s.net, 0)), h('span', null, ' ج.م')),
-      h('div', { class: 'row' }, h('div', null, paid ? 'اتصرف' : 'معتمد', h('b', null, paid ? '✓' : `${nApp} من ${ids.length}`)),
-        h('div', null, 'خصومات', h('b', null, sgn(tot(l => l.amount < 0 && !l.debt)))), h('div', null, 'أقساط وسلف', h('b', null, sgn(tot(l => !!l.debt)))))));
+      h('div', { class: 'row' }, h('button', { onclick: () => statusSheet(m) }, paid ? 'اتصرف' : 'معتمد', h('b', null, paid ? '✓ الكل' : `${nApp} من ${ids.length}`), h('i', null, '‹')),
+        h('button', { onclick: () => dedSheet(m) }, 'خصومات', h('b', null, sgn(tot(l => l.amount < 0 && !l.debt))), h('i', null, '‹')),
+        h('button', { onclick: () => debtsMonthSheet(m) }, 'أقساط وسلف', h('b', null, sgn(tot(l => !!l.debt))), h('i', null, '‹')))));
     ids.forEach((id, i) => {
       const s = slips[i], stt = sts[i], warn = s.changed ? 'البصمات اتغيرت بعد الاعتماد' : s.pending ? `${s.pending} يوم ناقص تسجيل` : s.lines.some(l => l.edited) ? 'فيه بند معدّل' : '';
       out.push(h('button', { class: 'pay-row', onclick: () => slipSheet(m, id) }, h('span', { class: 'ec-av', style: 'background:' + empColor(id) }, initial(empName(id))),
@@ -1234,25 +1246,110 @@
       h('button', { class: 'btn', style: 'flex:1', onclick: () => payExcel(m) }, '📊 Excel')));
     return out;
   }
+  /** شاشة بعنوان ثابت فوق فيه × وزراير ثابتة تحت — والشاشة اللي ورا مبتتحركش */
+  function panel(title, body, footer, opt) {
+    opt = opt || {}; UI.editor = null; UI.sheetGuard = opt.guard || null;
+    const sh = $('sheet'); sh.classList.add('full', 'pnl');
+    const close = () => { UI.sheetGuard = null; sh.close(); };
+    const x = h('button', { class: 'pn-x', 'aria-label': 'قفل', onclick: ev => { if (opt.guard && opt.guard()) confirmBtn(ev.currentTarget, 'تسيب التعديلات؟', close); else close(); } }, '×');
+    $('sheet-in').replaceChildren(h('div', { class: 'pn-hd' }, h('b', null, title), x), h('div', { class: 'pn-body' }, body), footer ? h('div', { class: 'pn-ft' }, footer) : null);
+    if (!sh.open) sh.showModal();
+    return close;
+  }
+  const numVal = v => +String(v).replace(/[^\d.]/g, '') || 0;
   function numbersSheet(m) {
-    const cfg = payCfg(), md = monthData(m), prods = (cfg.products || []).filter(p => p.on !== false), ids = payIds(m);
-    const sales = h('input', { inputmode: 'numeric', dir: 'ltr', value: md.sales || '', placeholder: '0' }), profit = h('input', { inputmode: 'numeric', dir: 'ltr', value: md.profit || '', placeholder: '0' });
-    const num = v => +String(v).replace(/[^\d.]/g, '') || 0;
-    const info = h('div', { class: 'mk-hint' });
-    const upd = () => { const sv = num(sales.value), n = teamIds(m).length || 1; info.textContent = !+cfg.target ? 'حدد رقم التارجت من الإعدادات ← المرتبات' : sv >= +cfg.target ? `✓ اتحقق · ${fmtN(sv)} × ${cfg.teamPct}% = ${fmtN(sv * cfg.teamPct / 100)} ÷ ${n} = ${fmtN(sv * cfg.teamPct / 100 / n)} لكل واحد` : `✗ موصلناش — المطلوب ${fmtN(cfg.target)}`; };
-    sales.addEventListener('input', upd); upd();
-    const qIn = {};
-    const tbl = prods.length ? h('div', { class: 'qt-wrap' }, h('table', { class: 'qt' }, h('tr', null, h('th'), prods.map(p => h('th', null, p.name, h('br'), h('small', null, fmtN(p.price) + ' ج')))),
-      ids.map(id => h('tr', null, h('td', { dir: 'auto' }, empName(id)), prods.map(p => { const i = h('input', { inputmode: 'numeric', value: (md.qty[id] || {})[p.id] || '', placeholder: '0' }); (qIn[id] = qIn[id] || {})[p.id] = i; return h('td', null, i); }))))) : null;
-    openSheet([h('div', { class: 'grab' }), h('h2', null, `أرقام ${monthLabel(m)}`),
-      teamIds(m).length ? h('div', { class: 'pay-in' }, h('b', null, '💰 إجمالي مبيعات الشهر'), sales, info, h('div', { class: 'mk-hint' }, 'الداخلين في التارجت: ' + teamIds(m).map(empName).join(' · '))) : null,
-      ids.some(id => +empPay(id).pct) ? h('div', { class: 'pay-in' }, h('b', null, '📈 ربح المحل'), profit, h('div', { class: 'mk-hint' }, ids.filter(id => +empPay(id).pct).map(id => `${empName(id)} ${empPay(id).pct}%`).join(' · '))) : null,
-      tbl ? h('div', { class: 'pay-in' }, h('b', null, '🏷 تارجت الأصناف — كام قطعة باع كل واحد'), tbl) : h('p', { class: 'muted' }, 'مفيش أصناف عليها عمولة — ضيفها من الإعدادات ← المرتبات.'),
-      h('button', { class: 'btn primary block', style: 'width:100%;margin-top:10px', onclick: () => {
-        md.sales = num(sales.value) || ''; md.profit = num(profit.value) || '';
-        for (const id in qIn) { md.qty[id] = {}; for (const pid in qIn[id]) { const v = num(qIn[id][pid].value); if (v) md.qty[id][pid] = v; } }
-        save(); $('sheet').close(); render(); toast('اتحفظ — الكشوف المسودة اتحسبت تاني');
-      } }, 'حفظ')]);
+    const cfg = payCfg(), md = monthData(m), prods = (cfg.products || []).filter(p => p.on !== false), ids = payIds(m), team = teamIds(m), pctIds = ids.filter(id => +empPay(id).pct);
+    let dirty = false; const mark = () => { dirty = true; };
+    const sales = h('input', { inputmode: 'numeric', dir: 'ltr', class: 'big-in', value: md.sales || '', placeholder: '0', oninput: mark }), profit = h('input', { inputmode: 'numeric', dir: 'ltr', class: 'big-in', value: md.profit || '', placeholder: '0', oninput: mark });
+    const sInfo = h('small'), pInfo = h('small');
+    const upd = () => {
+      const sv = numVal(sales.value), n = team.length || 1, pv = numVal(profit.value);
+      sInfo.className = !sv ? '' : +cfg.target && sv >= +cfg.target ? 'ok' : 'bad';
+      sInfo.textContent = !+cfg.target ? 'حدد رقم التارجت من الإعدادات ← المرتبات' : !sv ? `المطلوب ${fmtN(cfg.target)}` : sv >= +cfg.target ? `${fmtN(sv)} · ✓ اتحقق · ${fmtN(sv * cfg.teamPct / 100 / n)} لكل واحد` : `${fmtN(sv)} · ✗ موصلناش (المطلوب ${fmtN(cfg.target)})`;
+      pInfo.className = pv ? 'ok' : ''; pInfo.textContent = pv ? pctIds.map(id => `${empName(id)} ${empPay(id).pct}% = ${fmtN(roundTo(pv * empPay(id).pct / 100, +cfg.roundTo))}`).join(' · ') : pctIds.map(id => `${empName(id)} ${empPay(id).pct}%`).join(' · ');
+    };
+    sales.addEventListener('input', upd); profit.addEventListener('input', upd); upd();
+    const acc = (ic, t, info, inner, open) => { const d = h('details', { class: 'acc', open: open || null }, h('summary', null, h('span', { class: 'grow' }, ic + ' ' + t, info), h('span', { class: 'chv', html: ICON.chev })), h('div', { class: 'acc-b' }, inner)); return d; };
+    const prodTot = id => prods.reduce((a, p) => a + (+((md.qty[id] || {})[p.id]) || 0) * +p.price, 0);
+    const filled = ids.filter(id => prodTot(id)).length;
+    const saveAll = () => { md.sales = numVal(sales.value) || ''; md.profit = numVal(profit.value) || ''; save(); };
+    const body = [
+      team.length ? acc('💰', 'المبيعات والتارجت', sInfo, [sales, h('div', { class: 'mk-hint' }, 'الداخلين: ' + team.map(empName).join(' · '))], !md.sales) : null,
+      pctIds.length ? acc('📈', 'ربح المحل', pInfo, [profit, h('div', { class: 'mk-hint' }, 'النسبة بتتقرّب لأقرب ' + cfg.roundTo)], !!md.sales && !md.profit) : null,
+      prods.length ? h('button', { class: 'acc acc-btn', onclick: () => { if (dirty) saveAll(); productsSheet(m, ids[0], () => numbersSheet(m)); } },
+        h('span', { class: 'grow' }, '🏷 تارجت الأصناف', h('small', { class: filled ? 'ok' : '' }, filled ? `${filled} من ${ids.length} موظف · ${fmtN(ids.reduce((a, id) => a + prodTot(id), 0))} ج` : 'لسه مكتبتش — دوس هنا')), h('span', { class: 'chv', html: ICON.chev }))
+        : h('p', { class: 'muted' }, 'مفيش أصناف عليها عمولة — ضيفها من الإعدادات ← المرتبات.'),
+      !team.length && !pctIds.length ? h('p', { class: 'muted', style: 'font-size:12.5px' }, 'محدش داخل في التارجت الجماعي أو ليه نسبة أرباح — من ملف الموظف ← 💰 الفلوس.') : null];
+    const close = panel(`أرقام ${monthLabel(m)}`, body, [h('button', { class: 'btn primary', style: 'flex:2', onclick: () => { saveAll(); close(); render(); toast('اتحفظ — الكشوف المسودة اتحسبت تاني'); } }, 'حفظ'),
+      h('button', { class: 'btn', style: 'flex:1', onclick: ev => { if (dirty) confirmBtn(ev.currentTarget, 'تسيب التعديلات؟', close); else close(); } }, 'إلغاء')], { guard: () => dirty });
+  }
+  /** عدد القطع لكل موظف — تكتب الرقم والتطبيق يضرب في عمولة القطعة */
+  function productsSheet(m, id, back) {
+    const cfg = payCfg(), md = monthData(m), prods = (cfg.products || []).filter(p => p.on !== false), ids = payIds(m), i = ids.indexOf(id);
+    const q = Object.assign({}, md.qty[id] || {}); let dirty = false;
+    const tot = h('b'), calc = {};
+    const upd = () => { let t = 0; for (const p of prods) { const n = +q[p.id] || 0; t += n * +p.price; calc[p.id].textContent = n ? `${n} × ${fmtN(p.price)} = ${fmtN(n * p.price)} ج` : `${fmtN(p.price)} ج للقطعة`; } tot.textContent = fmtN(t) + ' ج'; };
+    const totOf = x => prods.reduce((a, p) => a + (+((md.qty[x] || {})[p.id]) || 0) * +p.price, 0);
+    const commit = () => { md.qty[id] = {}; for (const p of prods) if (+q[p.id]) md.qty[id][p.id] = +q[p.id]; save(); dirty = false; };
+    const chips = h('div', { class: 'pchips' }, ids.map(x => h('button', { class: x === id ? 'on' : '', onclick: () => { if (dirty) commit(); productsSheet(m, x, back); } }, empName(x), h('em', null, x === id ? '…' : totOf(x) ? fmtN(totOf(x)) : '—'))));
+    const rows = prods.map(p => { calc[p.id] = h('small');
+      const inp = h('input', { class: 'qty-in', inputmode: 'numeric', dir: 'ltr', value: q[p.id] || '', placeholder: '0', oninput: ev => { q[p.id] = numVal(ev.target.value); dirty = true; upd(); }, onkeydown: ev => { if (ev.key === 'Enter') { const all = [...$('sheet-in').querySelectorAll('.qty-in')], k = all.indexOf(ev.target); if (all[k + 1]) all[k + 1].focus(); else ev.target.blur(); } } });
+      return h('label', { class: 'prod' }, h('span', { class: 'grow' }, h('b', null, p.name || 'صنف'), calc[p.id]), inp); });
+    const next = ids[i + 1];
+    const close = panel(`🏷 الأصناف · ${monthLabel(m)}`, [chips, h('div', { class: 'card', style: 'padding:4px 14px' }, rows), h('div', { class: 'ptot' }, h('span', null, 'إجمالي ' + empName(id)), tot)],
+      [h('button', { class: 'btn primary', style: 'flex:2', onclick: () => { commit(); render(); if (next) productsSheet(m, next, back); else { toast('✓ اتحفظ للكل'); if (back) back(); else close(); } } }, next ? `حفظ ← ${empName(next)}` : 'حفظ ✓'),
+        h('button', { class: 'btn', style: 'flex:1', onclick: ev => { const go = () => { if (back) back(); else close(); }; if (dirty) confirmBtn(ev.currentTarget, 'تسيب التعديلات؟', go); else go(); } }, back ? 'رجوع' : 'إلغاء')], { guard: () => dirty });
+    upd(); setTimeout(() => { const f = $('sheet-in').querySelector('.qty-in'); if (f && !f.value) f.focus(); }, 200);
+  }
+  /** تفاصيل المربعات */
+  function statusSheet(m) {
+    const ids = payIds(m), by = { draft: [], approved: [], paid: [] };
+    for (const id of ids) by[slipState(m, id).status].push(id);
+    const row = id => { const s = shownSlip(m, id), st = slipState(m, id).status; return h('button', { class: 'pay-row', onclick: () => slipSheet(m, id) }, h('span', { class: 'ec-av', style: 'background:' + empColor(id) }, initial(empName(id))),
+      h('span', { class: 'grow' }, h('b', { dir: 'auto' }, empName(id)), h('small', null, st === 'draft' ? (s.pending ? `⚠ ${s.pending} يوم ناقص` : 'مستني اعتمادك') : `اتعتمد ${fmtDate(((slipState(m, id).snap || {}).at || '').slice(0, 10))}`)),
+      h('span', { class: 'net' }, h('b', null, fmtN(s.net)), h('span', { class: 'pb ' + st }, st === 'paid' ? '💸 اتصرف' : st === 'approved' ? '✓ معتمد' : 'مسودة'))); };
+    panel(`حالة كشوف ${monthLabel(m)}`, [
+      by.draft.length ? [h('div', { class: 'sec-title' }, `لسه مسودة (${by.draft.length})`), by.draft.map(row)] : null,
+      by.approved.length ? [h('div', { class: 'sec-title' }, `معتمد (${by.approved.length})`), by.approved.map(row)] : null,
+      by.paid.length ? [h('div', { class: 'sec-title' }, `اتصرف (${by.paid.length})`), by.paid.map(row)] : null],
+      by.draft.length ? [h('button', { class: 'btn primary', style: 'flex:1', onclick: () => slipSheet(m, by.draft[0]) }, `ابدأ بأول مسودة (${empName(by.draft[0])})`)] : null);
+  }
+  const DED_TYPES = [['abs', 'غياب بدون إذن'], ['exc', 'غياب بإذن'], ['leave', 'إجازة'], ['big', 'تأخير كبير'], ['rep', 'تكرار التأخير'], ['ot', 'تأخير صافي'], ['x', 'خصومات يدوية']];
+  function dedSheet(m, mode) {
+    mode = mode || 'type';
+    const ids = payIds(m), slips = ids.map(id => shownSlip(m, id));
+    const isDed = l => l.amount < 0 && !l.debt, kind = l => l.extra ? 'x' : l.key;
+    const total = slips.reduce((a, s) => a + s.lines.filter(isDed).reduce((x, l) => x + l.amount, 0), 0);
+    const seg = h('div', { class: 'seg2' }, h('button', { class: mode === 'type' ? 'on' : '', onclick: () => dedSheet(m, 'type') }, 'حسب النوع'), h('button', { class: mode === 'emp' ? 'on' : '', onclick: () => dedSheet(m, 'emp') }, 'حسب الموظف'));
+    const out = [seg];
+    if (!total) out.push(h('div', { class: 'card empty' }, 'مفيش خصومات الشهر ده ✓'));
+    else if (mode === 'type') {
+      for (const [k, label] of DED_TYPES) {
+        const items = []; slips.forEach(s => s.lines.filter(l => isDed(l) && kind(l) === k).forEach(l => items.push({ id: s.id, l })));
+        if (!items.length) continue;
+        const sum = items.reduce((a, x) => a + x.l.amount, 0);
+        out.push(h('div', { class: 'brk' }, h('div', { class: 't' }, h('span', null, label), h('span', null, sgn(sum))), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(sum / total * 100)}%` })),
+          items.map(x => h('button', { class: 'brk-e', onclick: () => slipSheet(m, x.id) }, h('span', { class: 'grow' }, h('b', { dir: 'auto' }, empName(x.id)), h('small', null, x.l.detail + (x.l.edited ? ' · ✎ معدّل' : ''))), h('span', null, sgn(x.l.amount))))));
+      }
+    } else {
+      slips.map(s => ({ s, sum: s.lines.filter(isDed).reduce((a, l) => a + l.amount, 0) })).filter(x => x.sum).sort((a, b) => a.sum - b.sum).forEach(({ s, sum }) =>
+        out.push(h('div', { class: 'brk' }, h('div', { class: 't' }, h('span', { dir: 'auto' }, empName(s.id)), h('span', null, sgn(sum))), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(sum / total * 100)}%` })),
+          s.lines.filter(isDed).map(l => h('button', { class: 'brk-e', onclick: () => slipSheet(m, s.id) }, h('span', { class: 'grow' }, h('b', null, l.label), h('small', null, l.detail)), h('span', null, sgn(l.amount)))))));
+    }
+    out.push(h('p', { class: 'muted', style: 'font-size:12.5px' }, 'دوس على أي سطر يفتح كشف الموظف.'));
+    panel(`خصومات ${monthLabel(m)} · ${sgn(total)}`, out);
+  }
+  function debtsMonthSheet(m) {
+    const ids = payIds(m), out = []; let total = 0;
+    for (const id of ids) {
+      const s = shownSlip(m, id), ls = s.lines.filter(l => l.debt); if (!ls.length) continue;
+      const sum = ls.reduce((a, l) => a + l.amount, 0); total += sum;
+      out.push(h('div', { class: 'brk' }, h('div', { class: 't' }, h('span', { dir: 'auto' }, empName(id)), h('span', null, sgn(sum))),
+        ls.map(l => h('button', { class: 'brk-e', onclick: () => slipSheet(m, id) }, h('span', { class: 'grow' }, h('b', null, l.label), h('small', null, l.detail + (l.edited ? ' · ✎ معدّل' : ''))), h('span', null, sgn(l.amount))))));
+    }
+    const open = S.debts.filter(d => debtRemain(d) > 0 && ids.includes(d.emp)).reduce((a, d) => a + debtRemain(d), 0);
+    panel(`أقساط وسلف ${monthLabel(m)} · ${sgn(total)}`, [out.length ? out : h('div', { class: 'card empty' }, 'مفيش أقساط أو سلف الشهر ده'),
+      h('p', { class: 'muted', style: 'font-size:12.5px' }, `إجمالي المديونيات المفتوحة على الموظفين: ${fmtN(open)} ج. تغيير قسط شهر من ملف الموظف ← 💰 الفلوس.`)]);
   }
   function slipSheet(m, id) {
     const ids = payIds(m), i = ids.indexOf(id), st = slipState(m, id), s = shownSlip(m, id); if (!s) return;
@@ -1284,7 +1381,7 @@
     const warns = [];
     if (s.changed) warns.push(h('div', { class: 'warn-line' }, `⚠ البصمات أو الأرقام اتغيرت بعد الاعتماد — الحساب دلوقتي ${fmtN(s.live.net)} بدل ${fmtN(s.net)}. لو عاوز تحدّثه: إلغاء الاعتماد واعتمد تاني.`));
     if (s.pending) warns.push(h('div', { class: 'warn-line' }, `⚠ فيه ${s.pending} يوم ناقص تسجيل في الشهر — الأحسن تراجعهم الأول.`));
-    $('sheet').classList.add('full'); UI.editor = null;
+    UI.sheetGuard = null; $('sheet').classList.remove('pnl'); $('sheet').classList.add('full'); UI.editor = null;
     $('sheet-in').replaceChildren(
       h('div', { class: 'cf-top' }, h('b', null, `كشف مرتب ${monthLabel(m)}`), h('button', { class: 'note-x', 'aria-label': 'قفل', onclick: () => { UI.slipEdit = ''; $('sheet').close(); } }, '×')),
       nav,
@@ -1686,8 +1783,10 @@
       }) }, 'حذف الموظف نهائيًا')));
     openSheet(kids); syncMode();
   }
-  function openSheet(kids) { UI.editor = null; $('sheet').classList.remove('full'); $('sheet-in').replaceChildren(...kids); if (!$('sheet').open) $('sheet').showModal(); }
-  $('sheet').addEventListener('click', ev => { if (ev.target === $('sheet')) $('sheet').close(); });
+  function openSheet(kids) { UI.editor = null; UI.sheetGuard = null; $('sheet').classList.remove('full', 'pnl'); $('sheet-in').replaceChildren(...kids); if (!$('sheet').open) $('sheet').showModal(); }
+  $('sheet').addEventListener('click', ev => { if (ev.target === $('sheet')) { if (UI.sheetGuard && UI.sheetGuard()) { toast('احفظ أو دوس إلغاء'); return; } $('sheet').close(); } });
+  $('sheet').addEventListener('close', () => { UI.sheetGuard = null; $('sheet').classList.remove('pnl'); document.documentElement.classList.remove('lock'); });
+  new MutationObserver(() => document.documentElement.classList.toggle('lock', $('sheet').open)).observe($('sheet'), { attributes: true, attributeFilter: ['open'] });
 
   /* ======================= الإعدادات ======================= */
   function renderSettings() {
@@ -2106,7 +2205,7 @@
           h('button', { class: 'btn primary', style: 'flex:2', disabled: !fresh && !accept.size, onclick: () => { $('sheet').close(); applyImport(parsed, fname, accept, newIds); } }, fresh ? `حفظ ${fresh} بصمة` : 'حفظ'),
           h('button', { class: 'btn', style: 'flex:1', onclick: () => $('sheet').close() }, 'إلغاء')));
     };
-    UI.editor = null; $('sheet').classList.add('full'); draw(); if (!$('sheet').open) $('sheet').showModal();
+    UI.editor = null; UI.sheetGuard = null; $('sheet').classList.remove('pnl'); $('sheet').classList.add('full'); draw(); if (!$('sheet').open) $('sheet').showModal();
   }
   const fmt12 = min => { const m = ((min % 1440) + 1440) % 1440, hh = Math.floor(m / 60), mm = m % 60; return `${hh % 12 || 12}:${pad(mm)} ${hh < 12 ? 'ص' : 'م'}`; };
   function applyImport(parsed, fname, accept, newIds) {
@@ -2364,7 +2463,7 @@
       try { L.addListener('localNotificationActionPerformed', ev => { if (ev && ev.notification && ev.notification.id === REMIND_ID) { go('day'); setTimeout(() => quickSheet(null), 300); } }); } catch (e) { /* ignore */ }
       scheduleReminder(true);
     }
-    if (A) try { A.addListener('backButton', () => { if (UI.searchOpen) UI.searchOpen.close(); else if ($('sheet').open) $('sheet').close(); else if (UI.tab === 'settings' && UI.setPage) { UI.setPage = ''; render(); } else if (UI.tab === 'emps' && UI.profile) { UI.profile = ''; render(); } else if (UI.tab !== 'day') go('day'); else A.minimizeApp(); }); } catch (e) { /* ignore */ }
+    if (A) try { A.addListener('backButton', () => { if (UI.searchOpen) UI.searchOpen.close(); else if ($('sheet').open) { if (UI.sheetGuard && UI.sheetGuard()) toast('احفظ أو دوس إلغاء'); else $('sheet').close(); } else if (UI.tab === 'settings' && UI.setPage) { UI.setPage = ''; render(); } else if (UI.tab === 'emps' && UI.profile) { UI.profile = ''; render(); } else if (UI.tab !== 'day') go('day'); else A.minimizeApp(); }); } catch (e) { /* ignore */ }
   })();
   let hiddenAt = 0;
   document.addEventListener('visibilitychange', () => {
